@@ -113,8 +113,6 @@ class DeadlinerBot:
         # Main menu actions
         if query.data == "main_menu":
             return await self.start(update, context)
-        elif query.data == "add_deadline":
-            return await self.start_add_deadline(update, context)
         elif query.data == "list_deadlines":
             return await self.list_deadlines(update, context)
         elif query.data == "export_deadlines":
@@ -151,9 +149,6 @@ class DeadlinerBot:
         elif query.data.startswith("reopen_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.reopen_deadline(update, context, deadline_id)
-        elif query.data.startswith("edit_"):
-            deadline_id = int(query.data.split("_")[1])
-            return await self.edit_deadline_weight(update, context, deadline_id)
         
         # Notification settings actions
         elif query.data == "set_notification_times":
@@ -1008,15 +1003,19 @@ def main():
         fallbacks=[CommandHandler('cancel', bot.cancel)]
     )
     
-    # Add handlers
+    # Add handlers - order matters!
     application.add_handler(CommandHandler('start', bot.start))
     application.add_handler(CommandHandler('help', bot.help_command))
     application.add_handler(CommandHandler('list', bot.list_deadlines))
     application.add_handler(CommandHandler('export', bot.export_deadlines))
     application.add_handler(CommandHandler('code', bot.prompt_secret_code))
+    
+    # Add conversation handlers first (higher priority)
     application.add_handler(add_deadline_conv)
     application.add_handler(notification_time_conv)
     application.add_handler(edit_deadline_conv)
+    
+    # Add general callback handler last (lower priority)
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     application.add_handler(MessageHandler(filters.TEXT, bot.check_secret_code), group=1)
     application.add_handler(MessageHandler(filters.ALL, bot.handle_group_message), group=2)
