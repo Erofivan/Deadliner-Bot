@@ -19,7 +19,7 @@ def calculate_importance_score(weight: int, deadline_date: datetime) -> float:
     Returns:
         Importance score (higher = more important)
     """
-    now = datetime.now()
+    now = datetime.now()z
     time_delta = deadline_date - now
     
     # Convert to hours remaining (can be negative for overdue)
