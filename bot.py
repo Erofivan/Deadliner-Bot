@@ -45,10 +45,8 @@ class DeadlinerBot:
         keyboard = [
             [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
             [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")],
-            [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
             [InlineKeyboardButton("🔔 Уведомления", callback_data="notification_settings")],
-            [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
-            [InlineKeyboardButton("🔑 Ввести код доступа", callback_data="enter_code")]
+            [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -65,6 +63,24 @@ class DeadlinerBot:
             await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup)
         else:
             await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    
+    async def advanced_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show advanced options menu."""
+        keyboard = [
+            [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
+            [InlineKeyboardButton("🔑 Ввести код доступа", callback_data="enter_code")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = "⚙️ *Дополнительные функции:*\n\n"
+        text += "📤 Экспорт дедлайнов - получить форматированный список для пересылки\n"
+        text += "🔑 Ввести код доступа - получить права редактирования дедлайнов"
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Help command handler."""
@@ -117,6 +133,8 @@ class DeadlinerBot:
             return await self.start_add_deadline(update, context)
         elif query.data == "list_deadlines":
             return await self.list_deadlines(update, context)
+        elif query.data == "advanced_menu":
+            return await self.advanced_menu(update, context)
         elif query.data == "export_deadlines":
             return await self.export_deadlines(update, context)
         elif query.data == "enter_code":
@@ -431,6 +449,7 @@ class DeadlinerBot:
                                        callback_data="sort_weight")
                 ],
                 [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
+                [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
                 [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
             ]
