@@ -169,9 +169,7 @@ class DeadlinerBot:
         elif query.data.startswith("reopen_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.reopen_deadline(update, context, deadline_id)
-        elif query.data.startswith("edit_"):
-            deadline_id = int(query.data.split("_")[1])
-            return await self.edit_deadline_weight(update, context, deadline_id)
+
         
         # Notification settings actions
         elif query.data == "set_notification_times":
@@ -203,9 +201,13 @@ class DeadlinerBot:
         """Get deadline title."""
         context.user_data['title'] = update.message.text
         
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.message.reply_text(
             "📄 Отлично! Теперь введите описание дедлайна "
-            "(или отправьте /skip чтобы пропустить):"
+            "(или отправьте /skip чтобы пропустить):",
+            reply_markup=reply_markup
         )
         
         return ADD_DESCRIPTION
@@ -217,12 +219,16 @@ class DeadlinerBot:
         else:
             context.user_data['description'] = update.message.text
         
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.message.reply_text(
             "📅 Введите дату и время дедлайна в одном из форматов:\n\n"
             "• 2024-12-31 15:30\n"
             "• 31.12.2024 15:30\n"
             "• завтра 15:30\n"
-            "• послезавтра 10:00"
+            "• послезавтра 10:00",
+            reply_markup=reply_markup
         )
         
         return ADD_DATE
@@ -235,6 +241,9 @@ class DeadlinerBot:
             deadline_date = self.parse_date(date_text)
             context.user_data['deadline_date'] = deadline_date
             
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await update.message.reply_text(
                 f"📊 Теперь укажите важность дедлайна (число от 0 до 10):\n\n"
                 f"📝 Название: {context.user_data['title']}\n"
@@ -244,18 +253,22 @@ class DeadlinerBot:
                 f"🟡 4-6 - Средняя важность\n"
                 f"🔵 1-3 - Низкая важность\n"
                 f"⚪ 0 - Очень низкая важность\n\n"
-                f"Введите число от 0 до 10:"
+                f"Введите число от 0 до 10:",
+                reply_markup=reply_markup
             )
             
             return ADD_WEIGHT
             
         except ValueError as e:
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
                 f"❌ Не удалось распознать дату: {e}\n\n"
                 "Попробуйте еще раз в формате:\n"
                 "• 2024-12-31 15:30\n"
                 "• 31.12.2024 15:30\n"
-                "• завтра 15:30"
+                "• завтра 15:30",
+                reply_markup=reply_markup
             )
             return ADD_DATE
     
@@ -266,8 +279,11 @@ class DeadlinerBot:
             weight = int(weight_text)
             
             if weight < 0 or weight > 10:
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 await update.message.reply_text(
-                    "❌ Вес должен быть числом от 0 до 10. Попробуйте еще раз:"
+                    "❌ Вес должен быть числом от 0 до 10. Попробуйте еще раз:",
+                    reply_markup=reply_markup
                 )
                 return ADD_WEIGHT
             
@@ -311,8 +327,11 @@ class DeadlinerBot:
             return ConversationHandler.END
             
         except ValueError:
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                "❌ Пожалуйста, введите число от 0 до 10:"
+                "❌ Пожалуйста, введите число от 0 до 10:",
+                reply_markup=reply_markup
             )
             return ADD_WEIGHT
     
@@ -769,6 +788,15 @@ class DeadlinerBot:
         )
         await self.notification_settings(update, context)
     
+    async def start_edit_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start conversation for editing deadline weight."""
+        query = update.callback_query
+        if not query.data.startswith("edit_"):
+            return ConversationHandler.END
+            
+        deadline_id = int(query.data.split("_")[1])
+        return await self.edit_deadline_weight(update, context, deadline_id)
+    
     async def edit_deadline_weight(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Start editing a deadline's weight."""
         user_id = update.effective_user.id
@@ -805,8 +833,12 @@ class DeadlinerBot:
             weight = int(weight_text)
             
             if weight < 0 or weight > 10:
+                deadline_id = context.user_data.get('edit_deadline_id')
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"detail_{deadline_id}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 await update.message.reply_text(
-                    "❌ Вес должен быть числом от 0 до 10. Попробуйте еще раз:"
+                    "❌ Вес должен быть числом от 0 до 10. Попробуйте еще раз:",
+                    reply_markup=reply_markup
                 )
                 return EDIT_DEADLINE
             
@@ -839,10 +871,29 @@ class DeadlinerBot:
             return ConversationHandler.END
             
         except ValueError:
+            deadline_id = context.user_data.get('edit_deadline_id')
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"detail_{deadline_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                "❌ Пожалуйста, введите число от 0 до 10:"
+                "❌ Пожалуйста, введите число от 0 до 10:",
+                reply_markup=reply_markup
             )
             return EDIT_DEADLINE
+
+    async def edit_deadline_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle back button during deadline editing."""
+        query = update.callback_query
+        if query.data.startswith("detail_"):
+            deadline_id = int(query.data.split("_")[1])
+            context.user_data.clear()  # Clear conversation data
+            return await self.deadline_detail(update, context, deadline_id)
+        return ConversationHandler.END
+
+    async def add_deadline_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle back button during add deadline conversation."""
+        context.user_data.clear()  # Clear conversation data
+        await self.start(update, context)
+        return ConversationHandler.END
 
     async def complete_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Mark deadline as completed."""
@@ -998,9 +1049,18 @@ def main():
         ],
         states={
             ADD_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.add_title)],
-            ADD_DESCRIPTION: [MessageHandler(filters.TEXT, bot.add_description)],
-            ADD_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.add_date)],
-            ADD_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.add_weight)]
+            ADD_DESCRIPTION: [
+                MessageHandler(filters.TEXT, bot.add_description),
+                CallbackQueryHandler(bot.add_deadline_back, pattern="^main_menu$")
+            ],
+            ADD_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.add_date),
+                CallbackQueryHandler(bot.add_deadline_back, pattern="^main_menu$")
+            ],
+            ADD_WEIGHT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.add_weight),
+                CallbackQueryHandler(bot.add_deadline_back, pattern="^main_menu$")
+            ]
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)]
     )
@@ -1019,10 +1079,13 @@ def main():
     # Add conversation handler for deadline editing
     edit_deadline_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(bot.edit_deadline_weight, pattern="^edit_")
+            CallbackQueryHandler(bot.start_edit_deadline, pattern="^edit_")
         ],
         states={
-            EDIT_DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_deadline_weight)]
+            EDIT_DEADLINE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_deadline_weight),
+                CallbackQueryHandler(bot.edit_deadline_back, pattern="^detail_")
+            ]
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)]
     )
