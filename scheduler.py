@@ -2,9 +2,9 @@
 import logging
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
-from config import REMINDER_INTERVALS
+from importance_calculator import calculate_importance_score, get_weight_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -21,151 +21,161 @@ class ReminderScheduler:
         """Start the scheduler with bot instance."""
         self.bot = bot
         
-        # Schedule reminders for each weight category
-        for weight, interval_minutes in REMINDER_INTERVALS.items():
-            self.scheduler.add_job(
-                self.send_reminders,
-                trigger=IntervalTrigger(minutes=interval_minutes),
-                args=[weight],
-                id=f"reminders_{weight}",
-                name=f"Send {weight} reminders",
-                misfire_grace_time=300  # 5 minutes grace time
-            )
-        
-        # Schedule daily summary
+        # Schedule reminder checks based on user settings
+        # Check every hour to see who should get notifications
         self.scheduler.add_job(
-            self.send_daily_summary,
+            self.check_and_send_notifications,
             trigger='cron',
-            hour=9,  # 9 AM
-            minute=0,
-            id="daily_summary",
-            name="Send daily summary",
-            misfire_grace_time=3600  # 1 hour grace time
+            minute=0,  # Every hour on the hour
+            id="hourly_notification_check",
+            name="Check and send notifications",
+            misfire_grace_time=1800  # 30 minutes grace time
         )
         
         self.scheduler.start()
         logger.info("Reminder scheduler started")
     
-    async def send_reminders(self, weight: str):
-        """Send reminders for deadlines of specific weight."""
+    async def check_and_send_notifications(self):
+        """Check if any users should receive notifications at this time."""
+        current_time = datetime.now()
+        current_hour_minute = current_time.strftime('%H:%M')
+        current_weekday = current_time.weekday()  # 0 = Monday
+        
+        logger.info(f"Checking notifications for {current_hour_minute} on weekday {current_weekday}")
+        
+        # Get all users with their notification settings
+        all_users = self.db.get_all_users_for_notifications()
+        
+        for user_id in all_users:
+            settings = self.db.get_user_notification_settings(user_id)
+            
+            # Check if current time matches user's notification times
+            should_notify = False
+            for notification_time in settings['times']:
+                if notification_time == current_hour_minute and current_weekday in settings['days']:
+                    should_notify = True
+                    break
+            
+            if should_notify:
+                await self.send_user_notifications(user_id)
+    
+    async def send_user_notifications(self, user_id: int):
+        """Send notifications to a specific user."""
         try:
-            deadlines = self.db.get_all_active_deadlines()
-            now = datetime.now()
+            # Get active deadlines for this user
+            deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+            
+            if not deadlines:
+                return  # No deadlines to notify about
+            
+            # Calculate importance scores and filter for notification
+            high_importance_deadlines = []
+            urgent_deadlines = []
             
             for deadline in deadlines:
-                if deadline['weight'] != weight:
-                    continue
+                importance_score = calculate_importance_score(deadline['weight'], deadline['deadline_date'])
                 
-                # Calculate time until deadline
-                time_until = deadline['deadline_date'] - now
+                # Send notifications for high importance items (score > 5)
+                # or items that are due soon (within 24 hours)
+                time_until = deadline['deadline_date'] - datetime.now()
+                hours_until = time_until.total_seconds() / 3600
                 
-                # Skip if deadline is too far in the future or already passed
-                if time_until.total_seconds() < 0:
-                    continue
-                
-                # Send reminder based on weight and time remaining
-                should_send = self._should_send_reminder(deadline, time_until, weight)
-                
-                if should_send:
-                    await self._send_reminder_message(deadline, time_until)
-                    
-                    # Also send to groups if deadline is urgent
-                    if weight == 'urgent' and time_until.days <= 1:
-                        await self._send_group_reminders(deadline, time_until)
-        
+                if importance_score > 10 or hours_until < 1:
+                    urgent_deadlines.append(deadline)
+                elif importance_score > 5 or hours_until < 24:
+                    high_importance_deadlines.append(deadline)
+            
+            # Send notifications if there are relevant deadlines
+            if urgent_deadlines:
+                await self._send_urgent_notification(user_id, urgent_deadlines)
+            elif high_importance_deadlines:
+                await self._send_regular_notification(user_id, high_importance_deadlines)
+            
         except Exception as e:
-            logger.error(f"Error sending {weight} reminders: {e}")
+            logger.error(f"Error sending notifications to user {user_id}: {e}")
     
-    def _should_send_reminder(self, deadline: dict, time_until: timedelta, weight: str) -> bool:
-        """Determine if a reminder should be sent."""
-        hours_until = time_until.total_seconds() / 3600
-        days_until = time_until.days
+    async def _send_urgent_notification(self, user_id: int, deadlines: list):
+        """Send urgent notification message."""
+        text = "🚨 *СРОЧНЫЕ НАПОМИНАНИЯ*\n\n"
         
-        # Different reminder rules based on weight
-        if weight == 'urgent':
-            # Send if less than 2 days remaining
-            return hours_until <= 48
-        elif weight == 'important':
-            # Send if less than 3 days remaining
-            return hours_until <= 72
-        elif weight == 'normal':
-            # Send if less than 1 week remaining
-            return days_until <= 7
-        elif weight == 'low':
-            # Send if less than 2 weeks remaining
-            return days_until <= 14
-        
-        return False
-    
-    async def _send_reminder_message(self, deadline: dict, time_until: timedelta):
-        """Send reminder message to user."""
-        if not self.bot:
-            return
-        
-        user_id = deadline['user_id']
-        
-        # Format time remaining
-        time_text = self._format_time_remaining(time_until)
-        
-        # Choose emoji and urgency text based on time remaining
-        if time_until.days < 0:
-            emoji = "🚨"
-            urgency = "ПРОСРОЧЕН"
-        elif time_until.total_seconds() < 3600:  # Less than 1 hour
-            emoji = "🔥"
-            urgency = "СРОЧНО"
-        elif time_until.days < 1:
-            emoji = "⚠️"
-            urgency = "СЕГОДНЯ"
-        elif time_until.days < 3:
-            emoji = "⏰"
-            urgency = "СКОРО"
-        else:
-            emoji = "📅"
-            urgency = "НАПОМИНАНИЕ"
-        
-        weight_emoji = {
-            'urgent': '🔴',
-            'important': '🟠', 
-            'normal': '🟡',
-            'low': '🟢'
-        }
-        
-        message = f"{emoji} *{urgency}*\n\n"
-        message += f"{weight_emoji[deadline['weight']]} *{deadline['title']}*\n"
-        message += f"⏳ {time_text}\n"
-        message += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
-        
-        if deadline['description']:
-            message += f"📄 {deadline['description']}\n"
+        for deadline in deadlines[:5]:  # Limit to 5 most urgent
+            time_delta = deadline['deadline_date'] - datetime.now()
+            weight_emoji = get_weight_emoji(deadline['weight'])
+            
+            if time_delta.total_seconds() < 0:
+                time_text = f"*просрочено на {abs(time_delta.days)} дн.*"
+            elif time_delta.days > 0:
+                time_text = f"{time_delta.days} дн."
+            else:
+                hours = int(time_delta.total_seconds() // 3600)
+                time_text = f"{hours} ч." if hours > 0 else "менее часа"
+            
+            text += f"{weight_emoji} *{deadline['title']}*\n"
+            text += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
+            text += f"⏰ Осталось: {time_text}\n\n"
         
         try:
             await self.bot.send_message(
                 chat_id=user_id,
-                text=message,
+                text=text,
                 parse_mode='Markdown'
             )
-            logger.info(f"Sent reminder for deadline {deadline['id']} to user {user_id}")
-            
         except Exception as e:
-            logger.error(f"Failed to send reminder to user {user_id}: {e}")
+            logger.error(f"Failed to send urgent notification to {user_id}: {e}")
+    
+    async def _send_regular_notification(self, user_id: int, deadlines: list):
+        """Send regular notification message."""
+        text = "⏰ *Напоминание о дедлайнах*\n\n"
+        
+        for deadline in deadlines[:3]:  # Limit to 3 most important
+            time_delta = deadline['deadline_date'] - datetime.now()
+            weight_emoji = get_weight_emoji(deadline['weight'])
+            
+            if time_delta.days > 0:
+                time_text = f"{time_delta.days} дн."
+            else:
+                hours = int(time_delta.total_seconds() // 3600)
+                time_text = f"{hours} ч." if hours > 0 else "сегодня"
+            
+            text += f"{weight_emoji} *{deadline['title']}*\n"
+            text += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
+            text += f"⏰ {time_text}\n\n"
+        
+        if len(deadlines) > 3:
+            text += f"И еще {len(deadlines) - 3} дедлайнов..."
+        
+        try:
+            await self.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Failed to send regular notification to {user_id}: {e}")
     
     async def _send_group_reminders(self, deadline: dict, time_until: timedelta):
         """Send urgent reminders to all groups."""
-        if not self.bot:
+        groups = self.db.get_all_groups()
+        
+        if not groups or time_until.total_seconds() > 3600:  # Only for deadlines within 1 hour
             return
         
-        groups = self.db.get_all_groups()
-        time_text = self._format_time_remaining(time_until)
+        weight_emoji = get_weight_emoji(deadline['weight'])
         
-        message = f"🚨 *СРОЧНЫЙ ДЕДЛАЙН*\n\n"
-        message += f"📝 {deadline['title']}\n"
+        hours = int(time_until.total_seconds() // 3600)
+        if hours > 0:
+            time_text = f"через {hours} ч."
+        else:
+            minutes = int(time_until.total_seconds() // 60)
+            time_text = f"через {minutes} мин." if minutes > 0 else "ПРЯМО СЕЙЧАС"
+        
+        message = f"🚨 *СРОЧНОЕ УВЕДОМЛЕНИЕ*\n\n"
+        message += f"{weight_emoji} *{deadline['title']}*\n"
         message += f"⏳ {time_text}\n"
         message += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
-        message += f"👤 @{deadline['username'] or deadline['first_name']}\n"
         
         if deadline['description']:
-            message += f"📄 {deadline['description']}\n"
+            message += f"📄 {deadline['description']}"
         
         for group_id in groups:
             try:
@@ -174,103 +184,8 @@ class ReminderScheduler:
                     text=message,
                     parse_mode='Markdown'
                 )
-                logger.info(f"Sent group reminder for deadline {deadline['id']} to group {group_id}")
-                
             except Exception as e:
                 logger.error(f"Failed to send group reminder to {group_id}: {e}")
-    
-    async def send_daily_summary(self):
-        """Send daily summary to all users."""
-        if not self.bot:
-            return
-        
-        try:
-            deadlines = self.db.get_all_active_deadlines()
-            now = datetime.now()
-            
-            # Group deadlines by user
-            user_deadlines = {}
-            for deadline in deadlines:
-                user_id = deadline['user_id']
-                if user_id not in user_deadlines:
-                    user_deadlines[user_id] = []
-                user_deadlines[user_id].append(deadline)
-            
-            # Send summary to each user
-            for user_id, user_dls in user_deadlines.items():
-                # Filter deadlines that are due soon
-                urgent_deadlines = []
-                upcoming_deadlines = []
-                
-                for dl in user_dls:
-                    time_until = dl['deadline_date'] - now
-                    if time_until.days <= 1:
-                        urgent_deadlines.append(dl)
-                    elif time_until.days <= 7:
-                        upcoming_deadlines.append(dl)
-                
-                if urgent_deadlines or upcoming_deadlines:
-                    await self._send_daily_summary_message(user_id, urgent_deadlines, upcoming_deadlines)
-        
-        except Exception as e:
-            logger.error(f"Error sending daily summary: {e}")
-    
-    async def _send_daily_summary_message(self, user_id: int, urgent: list, upcoming: list):
-        """Send daily summary message to user."""
-        message = "🌅 *Ежедневная сводка дедлайнов*\n\n"
-        
-        if urgent:
-            message += "🚨 *Срочные (сегодня-завтра):*\n"
-            for dl in urgent:
-                time_until = dl['deadline_date'] - datetime.now()
-                time_text = self._format_time_remaining(time_until)
-                message += f"• {dl['title']} - {time_text}\n"
-            message += "\n"
-        
-        if upcoming:
-            message += "📅 *На этой неделе:*\n"
-            for dl in upcoming:
-                message += f"• {dl['title']} - {dl['deadline_date'].strftime('%d.%m %H:%M')}\n"
-            message += "\n"
-        
-        message += "Удачного дня! 🍀"
-        
-        try:
-            await self.bot.send_message(
-                chat_id=user_id,
-                text=message,
-                parse_mode='Markdown'
-            )
-            logger.info(f"Sent daily summary to user {user_id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to send daily summary to user {user_id}: {e}")
-    
-    def _format_time_remaining(self, time_until: timedelta) -> str:
-        """Format time remaining in human readable format."""
-        if time_until.total_seconds() < 0:
-            return "просрочено"
-        
-        days = time_until.days
-        hours = time_until.seconds // 3600
-        minutes = (time_until.seconds % 3600) // 60
-        
-        if days > 0:
-            if days == 1:
-                return f"1 день {hours}ч"
-            elif days < 7:
-                return f"{days} дней {hours}ч"
-            else:
-                weeks = days // 7
-                remaining_days = days % 7
-                if remaining_days > 0:
-                    return f"{weeks} нед {remaining_days} дн"
-                else:
-                    return f"{weeks} недель"
-        elif hours > 0:
-            return f"{hours}ч {minutes}м"
-        else:
-            return f"{minutes} минут"
     
     def stop(self):
         """Stop the scheduler."""
