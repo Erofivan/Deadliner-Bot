@@ -153,16 +153,18 @@ class DeadlinerBot:
             return await self.reopen_deadline(update, context, deadline_id)
         elif query.data.startswith("edit_"):
             deadline_id = int(query.data.split("_")[1])
-            # TODO: Implement edit deadline functionality
-            await query.answer("✏️ Редактирование пока не реализовано")
+            return await self.edit_deadline_weight(update, context, deadline_id)
         
         # Notification settings actions
         elif query.data == "set_notification_times":
-            # TODO: Implement time setting functionality
-            await query.answer("⏰ Настройка времени пока не реализована")
+            return await self.set_notification_times(update, context)
         elif query.data == "set_notification_days":
-            # TODO: Implement day setting functionality  
-            await query.answer("📅 Настройка дней пока не реализована")
+            return await self.set_notification_days(update, context)
+        elif query.data.startswith("toggle_day_"):
+            day = int(query.data.split("_")[2])
+            return await self.toggle_notification_day(update, context, day)
+        elif query.data == "save_notification_days":
+            return await self.save_notification_days_confirm(update, context)
     
     async def start_add_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start conversation for adding deadline."""
@@ -621,6 +623,207 @@ class DeadlinerBot:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    async def set_notification_times(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Prompt user to set notification times."""
+        text = ("⏰ *Настройка времени уведомлений*\n\n"
+                "Введите время получения уведомлений в формате HH:MM, "
+                "разделенное запятыми.\n\n"
+                "*Примеры:*\n"
+                "• 10:00\n"
+                "• 10:00, 20:00\n"
+                "• 09:30, 14:00, 21:00\n\n"
+                "Введите время:")
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="notification_settings")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        return SET_NOTIFICATION_TIME
+    
+    async def save_notification_times(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Save notification times from user input."""
+        try:
+            user_id = update.effective_user.id
+            times_text = update.message.text.strip()
+            
+            # Parse times
+            time_strings = [t.strip() for t in times_text.split(',')]
+            valid_times = []
+            
+            for time_str in time_strings:
+                # Validate time format
+                if ':' not in time_str:
+                    raise ValueError(f"Неверный формат времени: {time_str}")
+                
+                parts = time_str.split(':')
+                if len(parts) != 2:
+                    raise ValueError(f"Неверный формат времени: {time_str}")
+                
+                hour, minute = int(parts[0]), int(parts[1])
+                if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                    raise ValueError(f"Неверное время: {time_str}")
+                
+                formatted_time = f"{hour:02d}:{minute:02d}"
+                valid_times.append(formatted_time)
+            
+            if not valid_times:
+                raise ValueError("Не указано ни одного времени")
+            
+            # Get current settings and update times
+            settings = self.db.get_user_notification_settings(user_id)
+            self.db.update_user_notification_settings(user_id, valid_times, settings['days'])
+            
+            await update.message.reply_text(
+                f"✅ Время уведомлений сохранено: {', '.join(valid_times)}\n\n"
+                "Возвращаемся к настройкам..."
+            )
+            
+            # Return to notification settings
+            context.user_data.clear()
+            await self.notification_settings(update, context)
+            
+            return ConversationHandler.END
+            
+        except ValueError as e:
+            await update.message.reply_text(
+                f"❌ {str(e)}\n\n"
+                "Попробуйте еще раз. Используйте формат HH:MM (например: 10:00, 20:30)"
+            )
+            return SET_NOTIFICATION_TIME
+        except Exception as e:
+            logger.error(f"Error saving notification times: {e}")
+            await update.message.reply_text("❌ Произошла ошибка при сохранении")
+            return ConversationHandler.END
+    
+    async def set_notification_days(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show day selection interface."""
+        user_id = update.effective_user.id
+        settings = self.db.get_user_notification_settings(user_id)
+        
+        day_names = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']
+        selected_days = settings['days']
+        
+        text = "📅 *Настройка дней уведомлений*\n\nВыберите дни недели:\n\n"
+        
+        keyboard = []
+        for i, day_name in enumerate(day_names):
+            is_selected = i in selected_days
+            button_text = f"✅ {day_name}" if is_selected else f"◻️ {day_name}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_day_{i}")])
+        
+        keyboard.append([
+            InlineKeyboardButton("💾 Сохранить", callback_data="save_notification_days"),
+            InlineKeyboardButton("🔙 Назад", callback_data="notification_settings")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    async def toggle_notification_day(self, update: Update, context: ContextTypes.DEFAULT_TYPE, day: int):
+        """Toggle a day in notification settings."""
+        user_id = update.effective_user.id
+        settings = self.db.get_user_notification_settings(user_id)
+        
+        if day in settings['days']:
+            settings['days'].remove(day)
+        else:
+            settings['days'].append(day)
+        
+        # Save updated settings
+        self.db.update_user_notification_settings(user_id, settings['times'], settings['days'])
+        
+        # Update interface
+        await self.set_notification_days(update, context)
+    
+    async def save_notification_days_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Confirm saving notification days."""
+        user_id = update.effective_user.id
+        settings = self.db.get_user_notification_settings(user_id)
+        
+        day_names = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']
+        selected_day_names = [day_names[day] for day in settings['days']]
+        
+        await update.callback_query.answer(
+            f"✅ Дни сохранены: {', '.join(selected_day_names)}"
+        )
+        await self.notification_settings(update, context)
+    
+    async def edit_deadline_weight(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
+        """Start editing a deadline's weight."""
+        user_id = update.effective_user.id
+        
+        # Get deadline from database
+        deadlines = self.db.get_user_deadlines(user_id)
+        deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
+        
+        if not deadline:
+            await update.callback_query.answer("❌ Дедлайн не найден")
+            return await self.edit_deadlines(update, context)
+        
+        context.user_data['edit_deadline_id'] = deadline_id
+        
+        weight_emoji = get_weight_emoji(deadline['weight'])
+        
+        text = (f"✏️ *Редактирование дедлайна*\n\n"
+                f"📝 **{deadline['title']}**\n"
+                f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
+                f"📊 Текущая важность: {weight_emoji} {deadline['weight']}/10\n\n"
+                f"Введите новую важность (число от 0 до 10):")
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"detail_{deadline_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        return EDIT_DEADLINE
+    
+    async def save_deadline_weight(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Save the edited deadline weight."""
+        try:
+            weight_text = update.message.text.strip()
+            weight = int(weight_text)
+            
+            if weight < 0 or weight > 10:
+                await update.message.reply_text(
+                    "❌ Вес должен быть числом от 0 до 10. Попробуйте еще раз:"
+                )
+                return EDIT_DEADLINE
+            
+            user_id = update.effective_user.id
+            deadline_id = context.user_data.get('edit_deadline_id')
+            
+            if not deadline_id:
+                await update.message.reply_text("❌ Ошибка: дедлайн не найден")
+                return ConversationHandler.END
+            
+            # Update deadline weight
+            success = self.db.update_deadline(deadline_id, user_id, weight=weight)
+            
+            if success:
+                weight_emoji = get_weight_emoji(weight)
+                keyboard = [[InlineKeyboardButton("📋 К деталям", callback_data=f"detail_{deadline_id}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    f"✅ Важность изменена на {weight_emoji} {weight}/10",
+                    reply_markup=reply_markup
+                )
+                
+                # Clear conversation data
+                context.user_data.clear()
+            else:
+                await update.message.reply_text("❌ Не удалось изменить важность")
+                context.user_data.clear()
+            
+            return ConversationHandler.END
+            
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Пожалуйста, введите число от 0 до 10:"
+            )
+            return EDIT_DEADLINE
 
     async def complete_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Mark deadline as completed."""
@@ -783,6 +986,28 @@ def main():
         fallbacks=[CommandHandler('cancel', bot.cancel)]
     )
     
+    # Add conversation handler for notification times
+    notification_time_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(bot.set_notification_times, pattern="^set_notification_times$")
+        ],
+        states={
+            SET_NOTIFICATION_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_notification_times)]
+        },
+        fallbacks=[CommandHandler('cancel', bot.cancel)]
+    )
+    
+    # Add conversation handler for deadline editing
+    edit_deadline_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(bot.edit_deadline_weight, pattern="^edit_")
+        ],
+        states={
+            EDIT_DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_deadline_weight)]
+        },
+        fallbacks=[CommandHandler('cancel', bot.cancel)]
+    )
+    
     # Add handlers
     application.add_handler(CommandHandler('start', bot.start))
     application.add_handler(CommandHandler('help', bot.help_command))
@@ -790,6 +1015,8 @@ def main():
     application.add_handler(CommandHandler('export', bot.export_deadlines))
     application.add_handler(CommandHandler('code', bot.prompt_secret_code))
     application.add_handler(add_deadline_conv)
+    application.add_handler(notification_time_conv)
+    application.add_handler(edit_deadline_conv)
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     application.add_handler(MessageHandler(filters.TEXT, bot.check_secret_code), group=1)
     application.add_handler(MessageHandler(filters.ALL, bot.handle_group_message), group=2)
