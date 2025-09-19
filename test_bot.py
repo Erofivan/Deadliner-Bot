@@ -37,7 +37,7 @@ def test_database():
             "Test Deadline", 
             "This is a test", 
             deadline_date, 
-            "normal"
+            5  # Use integer weight instead of string
         )
         print(f"✅ Deadline added with ID: {deadline_id}")
         

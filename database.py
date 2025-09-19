@@ -36,9 +36,19 @@ class Database:
                     title TEXT NOT NULL,
                     description TEXT,
                     deadline_date TIMESTAMP NOT NULL,
-                    weight TEXT NOT NULL DEFAULT 'normal',
+                    weight INTEGER NOT NULL DEFAULT 5,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     completed INTEGER DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Add user_notification_settings table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_notification_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    notification_times TEXT DEFAULT '[]',
+                    notification_days TEXT DEFAULT '[0,1,2,3,4,5,6]',
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
@@ -82,7 +92,7 @@ class Database:
             return bool(result and result[0])
     
     def add_deadline(self, user_id: int, title: str, description: str, 
-                    deadline_date: datetime, weight: str) -> int:
+                    deadline_date: datetime, weight: int) -> int:
         """Add a new deadline."""
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
@@ -194,4 +204,120 @@ class Database:
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT chat_id FROM groups')
+            return [row[0] for row in cursor.fetchall()]
+    
+    def get_user_notification_settings(self, user_id: int) -> Dict:
+        """Get notification settings for a user."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT notification_times, notification_days 
+                FROM user_notification_settings 
+                WHERE user_id = ?
+            ''', (user_id,))
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'times': json.loads(result[0]),
+                    'days': json.loads(result[1])
+                }
+            else:
+                # Return default settings
+                return {
+                    'times': ['10:00', '20:00'],
+                    'days': [0, 1, 2, 3, 4, 5, 6]  # All days
+                }
+    
+    def update_user_notification_settings(self, user_id: int, times: List[str], days: List[int]):
+        """Update notification settings for a user."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO user_notification_settings 
+                (user_id, notification_times, notification_days)
+                VALUES (?, ?, ?)
+            ''', (user_id, json.dumps(times), json.dumps(days)))
+            conn.commit()
+    
+    def update_deadline(self, deadline_id: int, user_id: int, title: str = None, 
+                       description: str = None, deadline_date: datetime = None, 
+                       weight: int = None) -> bool:
+        """Update a deadline."""
+        updates = []
+        params = []
+        
+        if title is not None:
+            updates.append('title = ?')
+            params.append(title)
+        if description is not None:
+            updates.append('description = ?')
+            params.append(description)
+        if deadline_date is not None:
+            updates.append('deadline_date = ?')
+            params.append(deadline_date)
+        if weight is not None:
+            updates.append('weight = ?')
+            params.append(weight)
+        
+        if not updates:
+            return False
+        
+        params.extend([deadline_id, user_id])
+        
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                UPDATE deadlines 
+                SET {', '.join(updates)}
+                WHERE id = ? AND user_id = ?
+            ''', params)
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def get_completed_deadlines(self, user_id: int) -> List[Dict]:
+        """Get completed deadlines for a user."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, title, description, deadline_date, weight, created_at, completed
+                FROM deadlines
+                WHERE user_id = ? AND completed = 1
+                ORDER BY completed DESC
+            ''', (user_id,))
+            
+            deadlines = []
+            for row in cursor.fetchall():
+                deadlines.append({
+                    'id': row[0],
+                    'title': row[1],
+                    'description': row[2],
+                    'deadline_date': datetime.fromisoformat(row[3]),
+                    'weight': row[4],
+                    'created_at': datetime.fromisoformat(row[5]) if row[5] else None,
+                    'completed': bool(row[6])
+                })
+            
+            return deadlines
+    
+    def reopen_deadline(self, deadline_id: int, user_id: int) -> bool:
+        """Reopen a completed deadline."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE deadlines 
+                SET completed = 0 
+                WHERE id = ? AND user_id = ?
+            ''', (deadline_id, user_id))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def get_all_users_for_notifications(self) -> List[int]:
+        """Get all user IDs that have deadlines."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT DISTINCT user_id 
+                FROM deadlines 
+                WHERE completed = 0
+            ''')
             return [row[0] for row in cursor.fetchall()]
