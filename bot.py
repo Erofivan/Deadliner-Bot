@@ -220,6 +220,8 @@ class DeadlinerBot:
             return await self.set_notification_times(update, context)
         elif query.data == "set_notification_days":
             return await self.set_notification_days(update, context)
+        elif query.data == "test_notifications":
+            return await self.test_notifications(update, context)
         elif query.data.startswith("toggle_day_"):
             day = int(query.data.split("_")[2])
             return await self.toggle_notification_day(update, context, day)
@@ -729,6 +731,7 @@ class DeadlinerBot:
         keyboard = [
             [InlineKeyboardButton("⏰ Настроить время", callback_data="set_notification_times")],
             [InlineKeyboardButton("📅 Настроить дни", callback_data="set_notification_days")],
+            [InlineKeyboardButton("🧪 Тест уведомлений", callback_data="test_notifications")],
             [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
         ]
         
@@ -865,6 +868,42 @@ class DeadlinerBot:
         )
         await self.notification_settings(update, context)
     
+    async def test_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send a test notification to verify the system is working."""
+        user_id = update.effective_user.id
+        
+        try:
+            # Get user's deadlines to include in test
+            deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+            
+            if deadlines:
+                # Use scheduler to send actual notification
+                await self.scheduler.send_user_notifications(user_id)
+                text = "🧪 *Тест уведомлений выполнен!*\n\n"
+                text += "✅ Тестовое уведомление отправлено на основе ваших текущих дедлайнов.\n\n"
+                text += f"🕐 Время: {datetime.now(self.tz).strftime('%H:%M')} (МСК)\n"
+                text += f"📅 День недели: {datetime.now(self.tz).weekday()}\n\n"
+                text += "Если уведомление не пришло, проверьте настройки времени и дней."
+            else:
+                text = "🧪 *Тест уведомлений*\n\n"
+                text += "❌ У вас нет активных дедлайнов для тестирования.\n\n"
+                text += f"🕐 Текущее время: {datetime.now(self.tz).strftime('%H:%M')} (МСК)\n"
+                text += f"📅 День недели: {datetime.now(self.tz).weekday()}\n\n"
+                text += "Создайте дедлайн и попробуйте тест снова."
+                
+        except Exception as e:
+            logger.error(f"Error testing notifications: {e}")
+            text = "❌ *Ошибка при тестировании уведомлений*\n\n"
+            text += "Проверьте настройки и попробуйте позже."
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="notification_settings")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
     async def start_edit_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start conversation for editing deadline weight."""
         query = update.callback_query

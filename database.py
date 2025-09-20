@@ -82,6 +82,13 @@ class Database:
                 INSERT OR REPLACE INTO users (user_id, username, first_name)
                 VALUES (?, ?, ?)
             ''', (user_id, username, first_name))
+            
+            # Initialize default notification settings if not exists
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_notification_settings (user_id, notification_times, notification_days)
+                VALUES (?, ?, ?)
+            ''', (user_id, '["10:00", "20:00"]', '[0,1,2,3,4,5,6]'))
+            
             conn.commit()
     
     def grant_access(self, user_id: int):
