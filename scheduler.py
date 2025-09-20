@@ -1,6 +1,7 @@
 """Scheduler for sending periodic reminders about deadlines."""
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -16,20 +17,22 @@ class ReminderScheduler:
         self.db = database
         self.scheduler = AsyncIOScheduler()
         self.bot = None
+        self.tz = ZoneInfo("Europe/Moscow")
     
     def start(self, bot):
         """Start the scheduler with bot instance."""
         self.bot = bot
         
         # Schedule reminder checks based on user settings
-        # Check every hour to see who should get notifications
+        # Check every minute to see who should get notifications  
         self.scheduler.add_job(
             self.check_and_send_notifications,
             trigger='cron',
-            minute=0,  # Every hour on the hour
-            id="hourly_notification_check",
+            minute='*',  # Every minute
+            timezone=self.tz,  # Use Moscow timezone
+            id="minute_notification_check",
             name="Check and send notifications",
-            misfire_grace_time=1800  # 30 minutes grace time
+            misfire_grace_time=300  # 5 minutes grace time
         )
         
         self.scheduler.start()
@@ -37,23 +40,26 @@ class ReminderScheduler:
     
     async def check_and_send_notifications(self):
         """Check if any users should receive notifications at this time."""
-        current_time = datetime.now()
+        current_time = datetime.now(self.tz)  # Use Moscow timezone
         current_hour_minute = current_time.strftime('%H:%M')
         current_weekday = current_time.weekday()  # 0 = Monday
         
-        logger.info(f"Checking notifications for {current_hour_minute} on weekday {current_weekday}")
+        logger.info(f"Checking notifications for {current_hour_minute} on weekday {current_weekday} (Moscow time)")
         
         # Get all users with their notification settings
         all_users = self.db.get_all_users_for_notifications()
+        logger.info(f"Found {len(all_users)} users with deadlines")
         
         for user_id in all_users:
             settings = self.db.get_user_notification_settings(user_id)
+            logger.debug(f"User {user_id} notification settings: times={settings['times']}, days={settings['days']}")
             
             # Check if current time matches user's notification times
             should_notify = False
             for notification_time in settings['times']:
                 if notification_time == current_hour_minute and current_weekday in settings['days']:
                     should_notify = True
+                    logger.info(f"Should notify user {user_id} at {current_hour_minute}")
                     break
             
             if should_notify:
@@ -77,7 +83,7 @@ class ReminderScheduler:
                 
                 # Send notifications for high importance items (score > 5)
                 # or items that are due soon (within 24 hours)
-                time_until = deadline['deadline_date'] - datetime.now()
+                time_until = deadline['deadline_date'] - datetime.now(self.tz)
                 hours_until = time_until.total_seconds() / 3600
                 
                 if importance_score > 10 or hours_until < 1:
@@ -99,7 +105,7 @@ class ReminderScheduler:
         text = "🚨 *СРОЧНЫЕ НАПОМИНАНИЯ*\n\n"
         
         for deadline in deadlines[:5]:  # Limit to 5 most urgent
-            time_delta = deadline['deadline_date'] - datetime.now()
+            time_delta = deadline['deadline_date'] - datetime.now(self.tz)
             weight_emoji = get_weight_emoji(deadline['weight'])
             
             if time_delta.total_seconds() < 0:
@@ -128,7 +134,7 @@ class ReminderScheduler:
         text = "⏰ *Напоминание о дедлайнах*\n\n"
         
         for deadline in deadlines[:3]:  # Limit to 3 most important
-            time_delta = deadline['deadline_date'] - datetime.now()
+            time_delta = deadline['deadline_date'] - datetime.now(self.tz)
             weight_emoji = get_weight_emoji(deadline['weight'])
             
             if time_delta.days > 0:

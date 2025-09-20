@@ -1,6 +1,9 @@
 """Main Deadliner Telegram Bot implementation."""
 import logging
 import re
+import json
+import base64
+import hashlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any
@@ -28,8 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Conversation states
 (ADD_DEADLINE, ADD_TITLE, ADD_DESCRIPTION, ADD_DATE, ADD_WEIGHT, 
- EDIT_DEADLINE, NOTIFICATION_SETTINGS, SET_NOTIFICATION_TIME, 
- VIEW_COMPLETED, DEADLINE_DETAIL) = range(10)
+ EDIT_DEADLINE, EDIT_TITLE, EDIT_DESCRIPTION, EDIT_DATE, EDIT_WEIGHT,
+ NOTIFICATION_SETTINGS, SET_NOTIFICATION_TIME, 
+ VIEW_COMPLETED, DEADLINE_DETAIL, ENTER_ACCESS_CODE) = range(15)
 
 
 def format_time_delta(delta: timedelta) -> str:
@@ -60,6 +64,30 @@ def format_time_delta(delta: timedelta) -> str:
         return f"**(просрочено на {time_str})**"
     else:
         return f"(осталось {time_str})"
+
+
+def format_duration(delta: timedelta) -> str:
+    """Format duration for time tracking display."""
+    days = delta.days
+    hours, remainder = divmod(delta.seconds, 3600)
+    
+    if days >= 7:
+        weeks = days // 7
+        remaining_days = days % 7
+        if remaining_days == 0:
+            return f"{weeks} нед."
+        else:
+            return f"{weeks} нед. {remaining_days} д."
+    elif days > 0:
+        if hours > 0:
+            return f"{days} д. {hours} ч."
+        else:
+            return f"{days} д."
+    elif hours > 0:
+        return f"{hours} ч."
+    else:
+        minutes, _ = divmod(remainder, 60)
+        return f"{minutes} мин."
     
 class DeadlinerBot:
     """Main bot class handling all functionality."""
@@ -99,15 +127,21 @@ class DeadlinerBot:
     async def advanced_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show advanced options menu."""
         keyboard = [
-            [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
+            [InlineKeyboardButton("🔐 Сгенерировать код доступа", callback_data="generate_access_code")],
             [InlineKeyboardButton("🔑 Ввести код доступа", callback_data="enter_code")],
+            [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
+            [InlineKeyboardButton("🎨 Отображение", callback_data="display_settings")],
+            [InlineKeyboardButton("📊 Статистика", callback_data="statistics")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         text = "⚙️ *Дополнительные функции:*\n\n"
+        text += "🔐 Сгенерировать код доступа - создать код на основе ваших дедлайнов для передачи другим\n"
+        text += "🔑 Ввести код доступа - получить дедлайны по коду от другого пользователя\n"
         text += "📤 Экспорт дедлайнов - получить форматированный список для пересылки\n"
-        text += "🔑 Ввести код доступа - получить права редактирования дедлайнов"
+        text += "🎨 Отображение - настроить как показываются дедлайны\n"
+        text += "📊 Статистика - подробная аналитика ваших дедлайнов"
         
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -169,8 +203,10 @@ class DeadlinerBot:
             return await self.advanced_menu(update, context)
         elif query.data == "export_deadlines":
             return await self.export_deadlines(update, context)
+        elif query.data == "generate_access_code":
+            return await self.generate_access_code(update, context)
         elif query.data == "enter_code":
-            return await self.prompt_secret_code(update, context)
+            return await self.prompt_access_code(update, context)
         elif query.data == "completed_deadlines":
             return await self.completed_deadlines(update, context)
         elif query.data == "notification_settings":
@@ -184,8 +220,10 @@ class DeadlinerBot:
         # Editing actions
         elif query.data == "edit_deadlines":
             return await self.edit_deadlines(update, context)
-        elif query.data == "edit_completed_deadlines":
-            return await self.edit_completed_deadlines(update, context)
+        elif query.data == "restore_completed_deadlines":
+            return await self.restore_completed_deadlines(update, context)
+        elif query.data == "delete_completed_deadlines":
+            return await self.delete_completed_deadlines(update, context)
         elif query.data.startswith("detail_"):
             deadline_id = int(query.data.split("_")[1])
             context.user_data['last_view'] = 'detail'
@@ -195,6 +233,9 @@ class DeadlinerBot:
         elif query.data.startswith("complete_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.complete_deadline(update, context, deadline_id)
+        elif query.data.startswith("delete_completed_"):
+            deadline_id = int(query.data.split("_")[2])
+            return await self.delete_completed_deadline(update, context, deadline_id)
         elif query.data.startswith("delete_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.delete_deadline(update, context, deadline_id)
@@ -208,6 +249,15 @@ class DeadlinerBot:
             return await self.set_notification_times(update, context)
         elif query.data == "set_notification_days":
             return await self.set_notification_days(update, context)
+        elif query.data == "test_notifications":
+            return await self.test_notifications(update, context)
+        elif query.data == "display_settings":
+            return await self.display_settings(update, context)
+        elif query.data == "statistics":
+            return await self.statistics(update, context)
+        elif query.data.startswith("toggle_show_"):
+            setting = query.data.split("toggle_")[1]
+            return await self.toggle_display_setting(update, context, setting)
         elif query.data.startswith("toggle_day_"):
             day = int(query.data.split("_")[2])
             return await self.toggle_notification_day(update, context, day)
@@ -422,10 +472,11 @@ class DeadlinerBot:
         
         raise ValueError("Неверный формат даты")
     
-    async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = 'importance'):
+    async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = 'time_asc'):
         """List user's deadlines with new interface."""
         user_id = update.effective_user.id
         deadlines = self.db.get_user_deadlines(user_id)
+        display_settings = self.db.get_user_display_settings(user_id)
 
         for dl in deadlines:
             if dl['deadline_date'].tzinfo is None:
@@ -440,53 +491,46 @@ class DeadlinerBot:
             ]
         else:
             # Sort deadlines based on selected criteria
-            if sort_by == 'importance':
-                deadlines = sort_deadlines_by_importance(deadlines)
-            elif sort_by == 'date':
-                deadlines = sorted(deadlines, key=lambda d: d['deadline_date'])
-            elif sort_by == 'time_remaining':
+            if sort_by == 'time_asc':
+                # Most urgent first (ascending by remaining time)
                 deadlines = sorted(deadlines, key=lambda d: abs((d['deadline_date'] - datetime.now(self.tz)).total_seconds()))
-            elif sort_by == 'weight':
+            elif sort_by == 'time_desc':
+                # Least urgent first (descending by remaining time)
+                deadlines = sorted(deadlines, key=lambda d: abs((d['deadline_date'] - datetime.now(self.tz)).total_seconds()), reverse=True)
+            elif sort_by == 'importance_asc':
+                # Least important first
+                deadlines = sorted(deadlines, key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']))
+            elif sort_by == 'importance_desc':
+                # Most important first (default from importance calculator)
+                deadlines = sort_deadlines_by_importance(deadlines)
+            elif sort_by == 'weight_asc':
+                # Lowest weight first
+                deadlines = sorted(deadlines, key=lambda d: d['weight'])
+            elif sort_by == 'weight_desc':
+                # Highest weight first
                 deadlines = sorted(deadlines, key=lambda d: d['weight'], reverse=True)
             
             text = "📋 *Ваши дедлайны:*\n\n"
             
+            # Use display settings to format deadlines
             for i, dl in enumerate(deadlines, 1):
-                if dl['deadline_date'].tzinfo is None:
-                    dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
-                time_delta = dl['deadline_date'] - datetime.now(self.tz)
-                time_left = format_time_delta(time_delta)
-                
-                weight_emoji = get_weight_emoji(dl['weight'])
-                
-                # Make overdue tasks bold
-                if time_delta <= timedelta(0):
-                    text += f"{i}. {weight_emoji} ***{dl['title']}*** {time_left}\n"
-                else:
-                    # Regular tasks with normal font
-                    text += f"{i}. {weight_emoji} {dl['title']} {time_left}\n"
-                
-                text += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
-                text += f"   📊 Важность: {dl['weight']}/10\n"
-                if dl['description']:
-                    text += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
-                text += "\n"
+                text += self.format_deadline_for_display(dl, display_settings, i)
             
-            # Create buttons for sorting and editing
-            sort_buttons = [
-                InlineKeyboardButton("📊 По важности" + (" ✓" if sort_by == 'importance' else ""), 
-                                   callback_data="sort_importance"),
-                InlineKeyboardButton("📅 По дате" + (" ✓" if sort_by == 'date' else ""), 
-                                   callback_data="sort_date")
-            ]
+            # Create 3 sorting buttons with reverse functionality
+            time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
+            importance_arrow = "⬆️" if sort_by == 'importance_asc' else "⬇️" if sort_by == 'importance_desc' else ""  
+            weight_arrow = "⬆️" if sort_by == 'weight_asc' else "⬇️" if sort_by == 'weight_desc' else ""
+            
+            # Toggle sort direction on repeated click
+            time_callback = "sort_time_desc" if sort_by == 'time_asc' else "sort_time_asc"
+            importance_callback = "sort_importance_desc" if sort_by == 'importance_asc' else "sort_importance_asc" 
+            weight_callback = "sort_weight_desc" if sort_by == 'weight_asc' else "sort_weight_asc"
             
             keyboard = [
-                sort_buttons,
                 [
-                    InlineKeyboardButton("⏰ По времени" + (" ✓" if sort_by == 'time_remaining' else ""), 
-                                       callback_data="sort_time_remaining"),
-                    InlineKeyboardButton("🏷 По весу" + (" ✓" if sort_by == 'weight' else ""), 
-                                       callback_data="sort_weight")
+                    InlineKeyboardButton(f"⏰ По времени {time_arrow}", callback_data=time_callback),
+                    InlineKeyboardButton(f"🎯 По важности {importance_arrow}", callback_data=importance_callback),
+                    InlineKeyboardButton(f"🏷 По весу {weight_arrow}", callback_data=weight_callback)
                 ],
                 [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
                 [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
@@ -612,7 +656,8 @@ class DeadlinerBot:
                 text += "\n"
         
         keyboard = [
-            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_completed_deadlines")],
+            [InlineKeyboardButton("🔄 Восстановить", callback_data="restore_completed_deadlines")],
+            [InlineKeyboardButton("🗑️ Удалить", callback_data="delete_completed_deadlines")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
         
@@ -623,8 +668,8 @@ class DeadlinerBot:
         else:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
     
-    async def edit_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show completed deadlines for editing (reopening)."""
+    async def restore_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show completed deadlines for restoring."""
         user_id = update.effective_user.id
         completed = self.db.get_completed_deadlines(user_id)
         
@@ -632,7 +677,7 @@ class DeadlinerBot:
             text = "✅ У вас пока нет завершенных дедлайнов."
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="completed_deadlines")]]
         else:
-            text = "✏️ *Выберите дедлайн для восстановления:*\n\n"
+            text = "🔄 *Выберите дедлайн для восстановления:*\n\n"
             
             keyboard = []
             for dl in completed:
@@ -648,6 +693,33 @@ class DeadlinerBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def delete_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show completed deadlines for deletion."""
+        user_id = update.effective_user.id
+        completed = self.db.get_completed_deadlines(user_id)
+        
+        if not completed:
+            text = "✅ У вас пока нет завершенных дедлайнов."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="completed_deadlines")]]
+        else:
+            text = "🗑️ *Выберите дедлайн для удаления:*\n\n"
+            text += "⚠️ *Внимание:* Удаленные дедлайны нельзя будет восстановить!\n\n"
+            
+            keyboard = []
+            for dl in completed:
+                if dl['deadline_date'].tzinfo is None:
+                    dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+                weight_emoji = get_weight_emoji(dl['weight'])
+                button_text = f"{weight_emoji} {dl['title']}"
+                if len(button_text) > 30:
+                    button_text = button_text[:27] + "..."
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"delete_completed_{dl['id']}")])
+            
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="completed_deadlines")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     
     async def reopen_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Reopen a completed deadline."""
@@ -655,9 +727,19 @@ class DeadlinerBot:
         
         if self.db.reopen_deadline(deadline_id, user_id):
             await update.callback_query.answer("🔄 Дедлайн восстановлен!")
-            await self.edit_completed_deadlines(update, context)
+            await self.restore_completed_deadlines(update, context)
         else:
             await update.callback_query.answer("❌ Не удалось восстановить дедлайн")
+
+    async def delete_completed_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
+        """Delete a completed deadline permanently."""
+        user_id = update.effective_user.id
+        
+        if self.db.delete_deadline(deadline_id, user_id):
+            await update.callback_query.answer("🗑️ Дедлайн удален!")
+            await self.delete_completed_deadlines(update, context)
+        else:
+            await update.callback_query.answer("❌ Не удалось удалить дедлайн")
     
     async def notification_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show notification settings."""
@@ -679,6 +761,7 @@ class DeadlinerBot:
         keyboard = [
             [InlineKeyboardButton("⏰ Настроить время", callback_data="set_notification_times")],
             [InlineKeyboardButton("📅 Настроить дни", callback_data="set_notification_days")],
+            [InlineKeyboardButton("🧪 Тест уведомлений", callback_data="test_notifications")],
             [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
         ]
         
@@ -815,6 +898,343 @@ class DeadlinerBot:
         )
         await self.notification_settings(update, context)
     
+    async def test_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send a test notification to verify the system is working."""
+        user_id = update.effective_user.id
+        
+        try:
+            # Get user's deadlines to include in test
+            deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+            
+            if deadlines:
+                # Use scheduler to send actual notification
+                await self.scheduler.send_user_notifications(user_id)
+                text = "🧪 *Тест уведомлений выполнен!*\n\n"
+                text += "✅ Тестовое уведомление отправлено на основе ваших текущих дедлайнов.\n\n"
+                text += f"🕐 Время: {datetime.now(self.tz).strftime('%H:%M')} (МСК)\n"
+                text += f"📅 День недели: {datetime.now(self.tz).weekday()}\n\n"
+                text += "Если уведомление не пришло, проверьте настройки времени и дней."
+            else:
+                text = "🧪 *Тест уведомлений*\n\n"
+                text += "❌ У вас нет активных дедлайнов для тестирования.\n\n"
+                text += f"🕐 Текущее время: {datetime.now(self.tz).strftime('%H:%M')} (МСК)\n"
+                text += f"📅 День недели: {datetime.now(self.tz).weekday()}\n\n"
+                text += "Создайте дедлайн и попробуйте тест снова."
+                
+        except Exception as e:
+            logger.error(f"Error testing notifications: {e}")
+            text = "❌ *Ошибка при тестировании уведомлений*\n\n"
+            text += "Проверьте настройки и попробуйте позже."
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="notification_settings")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    def format_deadline_for_display(self, deadline: Dict, settings: Dict, index: int = None) -> str:
+        """Format a deadline according to user display settings."""
+        dl = deadline.copy()
+        if dl['deadline_date'].tzinfo is None:
+            dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+        
+        time_delta = dl['deadline_date'] - datetime.now(self.tz)
+        time_left = format_time_delta(time_delta)
+        
+        # Start with basic structure
+        result = ""
+        
+        # Add index if provided
+        if index is not None:
+            result += f"{index}. "
+        
+        # Add emoji if enabled
+        if settings['show_emojis']:
+            weight_emoji = get_weight_emoji(dl['weight'])
+            result += f"{weight_emoji} "
+        
+        # Add title (always shown)
+        if time_delta <= timedelta(0):
+            result += f"***{dl['title']}***"
+        else:
+            result += dl['title']
+        
+        # Add remaining time if enabled
+        if settings['show_remaining_time']:
+            result += f" {time_left}"
+        
+        result += "\n"
+        
+        # Add date if enabled
+        if settings['show_date']:
+            result += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
+        
+        # Add importance/weight if enabled
+        if settings['show_importance'] or settings['show_weight']:
+            if settings['show_weight']:
+                result += f"   📊 Важность: {dl['weight']}/10\n"
+        
+        # Add description if enabled and exists
+        if settings['show_description'] and dl['description']:
+            result += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
+        
+        # Add time tracking information if enabled
+        if settings.get('show_time_tracking', True):
+            created_at = dl.get('created_at')
+            completed_at = dl.get('completed_at')
+            
+            if created_at:
+                if isinstance(created_at, str):
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=self.tz)
+                
+                total_time = dl['deadline_date'] - created_at
+                result += f"   ⏱️ Общее время: {format_duration(total_time)}\n"
+                
+                if completed_at and dl.get('completed'):
+                    if isinstance(completed_at, str):
+                        completed_at = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+                    if completed_at.tzinfo is None:
+                        completed_at = completed_at.replace(tzinfo=self.tz)
+                    
+                    work_time = completed_at - created_at
+                    result += f"   ✅ Время выполнения: {format_duration(work_time)}\n"
+        
+        result += "\n"
+        return result
+
+    async def display_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show display configuration settings with example."""
+        user_id = update.effective_user.id
+        settings = self.db.get_user_display_settings(user_id)
+        
+        # Create example deadlines
+        example_deadlines = [
+            {
+                'title': 'Сдать курсовую работу',
+                'description': 'Написать и оформить курсовую работу по базам данных',
+                'deadline_date': datetime.now(self.tz) + timedelta(days=2, hours=3),
+                'weight': 9,
+                'created_at': datetime.now(self.tz) - timedelta(days=14),
+                'completed': False,
+                'completed_at': None
+            },
+            {
+                'title': 'Купить продукты',
+                'description': 'Молоко, хлеб, масло для завтрака',
+                'deadline_date': datetime.now(self.tz) + timedelta(hours=5),
+                'weight': 4,
+                'created_at': datetime.now(self.tz) - timedelta(hours=2),
+                'completed': False,
+                'completed_at': None
+            },
+            {
+                'title': 'Встреча с клиентом',
+                'description': 'Презентация нового проекта в офисе',
+                'deadline_date': datetime.now(self.tz) - timedelta(hours=5),  # Completed example
+                'weight': 7,
+                'created_at': datetime.now(self.tz) - timedelta(days=3),
+                'completed': True,
+                'completed_at': datetime.now(self.tz) - timedelta(hours=5)
+            }
+        ]
+        
+        # Format example deadlines with current settings
+        example_text = ""
+        for i, dl in enumerate(example_deadlines, 1):
+            example_text += self.format_deadline_for_display(dl, settings, i)
+        
+        text = "🎨 *Настройки отображения дедлайнов*\n\n"
+        text += "*Пример того, как выглядят ваши дедлайны:*\n\n"
+        text += example_text
+        text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+        text += "*Настройте отображение:*"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    f"⏰ Оставшееся время {'✅' if settings['show_remaining_time'] else '❌'}",
+                    callback_data="toggle_show_remaining_time"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"📄 Описание {'✅' if settings['show_description'] else '❌'}",
+                    callback_data="toggle_show_description"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"📊 Важность {'✅' if settings['show_importance'] else '❌'}",
+                    callback_data="toggle_show_importance"
+                ),
+                InlineKeyboardButton(
+                    f"🏷 Вес {'✅' if settings['show_weight'] else '❌'}",
+                    callback_data="toggle_show_weight"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"😊 Смайлики {'✅' if settings['show_emojis'] else '❌'}",
+                    callback_data="toggle_show_emojis"
+                ),
+                InlineKeyboardButton(
+                    f"📅 Дата {'✅' if settings['show_date'] else '❌'}",
+                    callback_data="toggle_show_date"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"⏱️ Время выполнения {'✅' if settings.get('show_time_tracking', True) else '❌'}",
+                    callback_data="toggle_show_time_tracking"
+                )
+            ],
+            [InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    async def statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show detailed statistics about user's deadlines."""
+        user_id = update.effective_user.id
+        
+        # Get all deadlines (completed and active)
+        active_deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+        completed_deadlines = self.db.get_user_deadlines(user_id, include_completed=True)
+        all_deadlines = [dl for dl in completed_deadlines if dl.get('completed')]
+        
+        # Ensure timezone info
+        for dl in active_deadlines + all_deadlines:
+            if dl['deadline_date'].tzinfo is None:
+                dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+            if dl.get('created_at') and isinstance(dl['created_at'], str):
+                dl['created_at'] = datetime.fromisoformat(dl['created_at'].replace('Z', '+00:00'))
+            if dl.get('completed_at') and isinstance(dl['completed_at'], str):
+                dl['completed_at'] = datetime.fromisoformat(dl['completed_at'].replace('Z', '+00:00'))
+        
+        text = "📊 *Статистика дедлайнов*\n\n"
+        
+        # Basic counts
+        total_completed = len(all_deadlines)
+        total_active = len(active_deadlines)
+        
+        text += f"📈 *Основная статистика:*\n"
+        text += f"✅ Завершенных дедлайнов: {total_completed}\n"
+        text += f"⏳ Активных дедлайнов: {total_active}\n"
+        text += f"📋 Всего дедлайнов: {total_completed + total_active}\n\n"
+        
+        if total_completed > 0:
+            # Calculate completion statistics
+            completion_times = []
+            total_times = []
+            weights = []
+            
+            for dl in all_deadlines:
+                if dl.get('created_at') and dl.get('completed_at'):
+                    created = dl['created_at']
+                    completed = dl['completed_at']
+                    deadline = dl['deadline_date']
+                    
+                    # Fix timezone issues
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=self.tz)
+                    if completed.tzinfo is None:
+                        completed = completed.replace(tzinfo=self.tz)
+                    
+                    completion_time = completed - created
+                    total_time = deadline - created
+                    
+                    completion_times.append((dl, completion_time))
+                    total_times.append((dl, total_time))
+                
+                weights.append((dl, dl['weight']))
+            
+            # Find interesting records
+            if completion_times:
+                fastest = min(completion_times, key=lambda x: x[1].total_seconds())
+                longest = max(completion_times, key=lambda x: x[1].total_seconds())
+                
+                text += f"🏃 *Самый быстрый дедлайн:*\n"
+                text += f"   {get_weight_emoji(fastest[0]['weight'])} {fastest[0]['title']}\n"
+                text += f"   ⏱️ Выполнен за: {format_duration(fastest[1])}\n\n"
+                
+                text += f"🐌 *Самый долгий по выполнению:*\n"
+                text += f"   {get_weight_emoji(longest[0]['weight'])} {longest[0]['title']}\n"
+                text += f"   ⏱️ Выполнялся: {format_duration(longest[1])}\n\n"
+            
+            if weights:
+                hardest = max(weights, key=lambda x: x[1])
+                easiest = min(weights, key=lambda x: x[1])
+                
+                text += f"🔥 *Самый сложный дедлайн:*\n"
+                text += f"   {get_weight_emoji(hardest[0]['weight'])} {hardest[0]['title']}\n"
+                text += f"   📊 Важность: {hardest[0]['weight']}/10\n\n"
+                
+                text += f"😌 *Самый легкий дедлайн:*\n"
+                text += f"   {get_weight_emoji(easiest[0]['weight'])} {easiest[0]['title']}\n"
+                text += f"   📊 Важность: {easiest[0]['weight']}/10\n\n"
+            
+            # Average statistics
+            if completion_times:
+                avg_completion = sum(ct[1].total_seconds() for ct in completion_times) / len(completion_times)
+                text += f"📊 *Средняя статистика:*\n"
+                text += f"   ⏱️ Среднее время выполнения: {format_duration(timedelta(seconds=avg_completion))}\n"
+                
+                avg_weight = sum(w[1] for w in weights) / len(weights)
+                text += f"   📈 Средняя важность: {avg_weight:.1f}/10\n\n"
+        
+        if total_active > 0:
+            # Active deadline statistics
+            overdue = [dl for dl in active_deadlines if dl['deadline_date'] < datetime.now(self.tz)]
+            urgent = [dl for dl in active_deadlines 
+                     if dl['deadline_date'] > datetime.now(self.tz) and 
+                     (dl['deadline_date'] - datetime.now(self.tz)).total_seconds() < 24*3600]
+            
+            text += f"⚡ *Активные дедлайны:*\n"
+            text += f"   🚨 Просрочено: {len(overdue)}\n"
+            text += f"   ⏰ Срочные (< 24ч): {len(urgent)}\n"
+            text += f"   📝 Обычные: {total_active - len(overdue) - len(urgent)}\n\n"
+            
+            if active_deadlines:
+                heaviest_active = max(active_deadlines, key=lambda x: x['weight'])
+                lightest_active = min(active_deadlines, key=lambda x: x['weight'])
+                
+                text += f"🎯 *Текущие экстремумы:*\n"
+                text += f"   🔥 Самый важный: {heaviest_active['title']} ({heaviest_active['weight']}/10)\n"
+                text += f"   😌 Самый простой: {lightest_active['title']} ({lightest_active['weight']}/10)\n"
+        
+        if total_completed == 0 and total_active == 0:
+            text += "🌟 *Пока нет данных для статистики*\n"
+            text += "Создайте и завершите несколько дедлайнов, чтобы увидеть интересную аналитику!"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def toggle_display_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE, setting: str):
+        """Toggle a display setting and refresh the interface."""
+        user_id = update.effective_user.id
+        current_settings = self.db.get_user_display_settings(user_id)
+        
+        # Toggle the setting
+        new_value = not current_settings[setting]
+        self.db.update_user_display_setting(user_id, setting, new_value)
+        
+        # Refresh the display settings interface
+        await self.display_settings(update, context)
+
     async def start_edit_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start conversation for editing deadline weight."""
         query = update.callback_query
@@ -988,6 +1408,180 @@ class DeadlinerBot:
         else:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     
+    async def generate_access_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate access code based on user's deadlines."""
+        user_id = update.effective_user.id
+        deadlines = self.db.get_user_deadlines(user_id)
+        
+        if not deadlines:
+            text = "❌ У вас нет дедлайнов для создания кода доступа."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(text, reply_markup=reply_markup)
+            return
+        
+        # Prepare deadline data for encoding
+        deadline_data = []
+        for dl in deadlines:
+            if dl['completed']:
+                continue  # Skip completed deadlines
+            
+            deadline_info = {
+                'title': dl['title'],
+                'description': dl['description'] or '',
+                'deadline_date': dl['deadline_date'].isoformat() if hasattr(dl['deadline_date'], 'isoformat') else str(dl['deadline_date']),
+                'weight': dl['weight']
+            }
+            deadline_data.append(deadline_info)
+        
+        if not deadline_data:
+            text = "❌ У вас нет активных дедлайнов для создания кода доступа."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(text, reply_markup=reply_markup)
+            return
+        
+        # Create the access code
+        try:
+            # Convert to JSON and encode
+            json_data = json.dumps(deadline_data, ensure_ascii=False)
+            encoded_data = base64.b64encode(json_data.encode('utf-8')).decode('ascii')
+            
+            # Create a readable access code (first 12 chars of hash + length info)
+            data_hash = hashlib.md5(json_data.encode('utf-8')).hexdigest()[:12].upper()
+            code_length = len(encoded_data)
+            access_code = f"DL{data_hash}{code_length:04d}"
+            
+            # Store the full data for later retrieval
+            self.db.store_access_code(access_code, encoded_data)
+            
+            text = f"🔐 *Код доступа создан!*\n\n"
+            text += f"**Ваш код:** `{access_code}`\n\n"
+            text += f"📊 Экспортировано дедлайнов: {len(deadline_data)}\n"
+            text += f"🕐 Код создан: {datetime.now(self.tz).strftime('%d.%m.%Y %H:%M')}\n\n"
+            text += "🔄 *Как использовать:*\n"
+            text += "1. Скопируйте код выше\n"
+            text += "2. Передайте его другому пользователю\n"
+            text += "3. Он сможет импортировать ваши дедлайны через \"Ввести код доступа\"\n\n"
+            text += "⚠️ *Внимание:* Код содержит все ваши активные дедлайны!"
+            
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+        except Exception as e:
+            logger.error(f"Error generating access code: {e}")
+            text = "❌ Не удалось создать код доступа. Попробуйте позже."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def prompt_access_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Prompt user to enter access code for importing deadlines."""
+        text = "🔑 *Импорт дедлайнов по коду*\n\n"
+        text += "Введите код доступа, полученный от другого пользователя.\n\n"
+        text += "**Формат кода:** DL + 12 символов + 4 цифры\n"
+        text += "**Пример:** `DLA1B2C3D4E5F012`\n\n"
+        text += "⚠️ *Внимание:* Дедлайны будут добавлены к вашим существующим, а не заменят их."
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        return ENTER_ACCESS_CODE
+
+    async def import_deadlines_from_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Import deadlines from access code."""
+        access_code = update.message.text.strip().upper()
+        user_id = update.effective_user.id
+        
+        # Validate code format
+        if not access_code.startswith('DL') or len(access_code) != 18:
+            await update.message.reply_text(
+                "❌ Неверный формат кода. Код должен начинаться с 'DL' и содержать 16 символов после него.\n\n"
+                "**Пример:** `DLA1B2C3D4E5F012`"
+            )
+            return ENTER_ACCESS_CODE
+        
+        try:
+            # Get stored data
+            encoded_data = self.db.get_access_code_data(access_code)
+            
+            if not encoded_data:
+                await update.message.reply_text(
+                    "❌ Код доступа не найден или уже недействителен.\n\n"
+                    "Убедитесь, что код введен правильно и попробуйте еще раз."
+                )
+                return ENTER_ACCESS_CODE
+            
+            # Decode the data
+            json_data = base64.b64decode(encoded_data.encode('ascii')).decode('utf-8')
+            deadline_data = json.loads(json_data)
+            
+            # Import deadlines
+            imported_count = 0
+            for dl_info in deadline_data:
+                try:
+                    # Parse deadline date
+                    deadline_date = datetime.fromisoformat(dl_info['deadline_date'])
+                    if deadline_date.tzinfo is None:
+                        deadline_date = deadline_date.replace(tzinfo=self.tz)
+                    
+                    # Add deadline to user's account
+                    self.db.add_deadline(
+                        user_id=user_id,
+                        title=dl_info['title'],
+                        description=dl_info['description'],
+                        deadline_date=deadline_date,
+                        weight=dl_info['weight']
+                    )
+                    imported_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error importing deadline: {e}")
+                    continue
+            
+            if imported_count > 0:
+                text = f"✅ *Импорт успешно завершен!*\n\n"
+                text += f"📊 Импортировано дедлайнов: {imported_count}\n"
+                text += f"🕐 Время импорта: {datetime.now(self.tz).strftime('%d.%m.%Y %H:%M')}\n\n"
+                text += "🔍 Посмотреть новые дедлайны можно в разделе \"Мои дедлайны\"."
+                
+                keyboard = [
+                    [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")],
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+                ]
+            else:
+                text = "❌ Не удалось импортировать дедлайны. Возможно, они повреждены."
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            
+            return ConversationHandler.END
+            
+        except Exception as e:
+            logger.error(f"Error importing deadlines from code: {e}")
+            await update.message.reply_text(
+                "❌ Не удалось обработать код доступа. Убедитесь, что код введен правильно."
+            )
+            return ENTER_ACCESS_CODE
+
     async def prompt_secret_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Prompt user to enter secret code."""
         text = "🔑 Введите секретный код для получения доступа к редактированию дедлайнов:"
@@ -1154,6 +1748,20 @@ def main():
         fallbacks=[CommandHandler('cancel', bot.cancel)]
     )
     
+    # Add conversation handler for access code import
+    access_code_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(bot.prompt_access_code, pattern="^enter_code$")
+        ],
+        states={
+            ENTER_ACCESS_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.import_deadlines_from_code),
+                CallbackQueryHandler(bot.advanced_menu, pattern="^advanced_menu$")
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(bot.advanced_menu, pattern="^advanced_menu$")]
+    )
+    
     # Add handlers
     application.add_handler(CommandHandler('start', bot.start))
     application.add_handler(CommandHandler('help', bot.help_command))
@@ -1163,6 +1771,7 @@ def main():
     application.add_handler(add_deadline_conv)
     application.add_handler(notification_time_conv)
     application.add_handler(edit_deadline_conv)
+    application.add_handler(access_code_conv)
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     application.add_handler(MessageHandler(filters.TEXT, bot.check_secret_code), group=1)
     application.add_handler(MessageHandler(filters.ALL, bot.handle_group_message), group=2)
