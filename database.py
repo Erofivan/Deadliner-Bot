@@ -72,6 +72,20 @@ class Database:
                 )
             ''')
             
+            # User display settings table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_display_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    show_remaining_time INTEGER DEFAULT 1,
+                    show_description INTEGER DEFAULT 1,
+                    show_importance INTEGER DEFAULT 1,
+                    show_weight INTEGER DEFAULT 1,
+                    show_emojis INTEGER DEFAULT 1,
+                    show_date INTEGER DEFAULT 1,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
+            
             conn.commit()
     
     def add_user(self, user_id: int, username: str = None, first_name: str = None):
@@ -88,6 +102,13 @@ class Database:
                 INSERT OR IGNORE INTO user_notification_settings (user_id, notification_times, notification_days)
                 VALUES (?, ?, ?)
             ''', (user_id, '["10:00", "20:00"]', '[0,1,2,3,4,5,6]'))
+            
+            # Initialize default display settings
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_display_settings 
+                (user_id, show_remaining_time, show_description, show_importance, show_weight, show_emojis, show_date)
+                VALUES (?, 1, 1, 1, 1, 1, 1)
+            ''', (user_id,))
             
             conn.commit()
     
@@ -376,3 +397,53 @@ class Database:
             ''')
             conn.commit()
             return cursor.rowcount
+    
+    def get_user_display_settings(self, user_id: int) -> Dict:
+        """Get display settings for a user."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT show_remaining_time, show_description, show_importance, 
+                       show_weight, show_emojis, show_date
+                FROM user_display_settings 
+                WHERE user_id = ?
+            ''', (user_id,))
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'show_remaining_time': bool(result[0]),
+                    'show_description': bool(result[1]),
+                    'show_importance': bool(result[2]),
+                    'show_weight': bool(result[3]),
+                    'show_emojis': bool(result[4]),
+                    'show_date': bool(result[5])
+                }
+            else:
+                # Return default settings
+                return {
+                    'show_remaining_time': True,
+                    'show_description': True,
+                    'show_importance': True,
+                    'show_weight': True,
+                    'show_emojis': True,
+                    'show_date': True
+                }
+    
+    def update_user_display_setting(self, user_id: int, setting: str, value: bool):
+        """Update a specific display setting for a user."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            # Ensure user exists in display settings
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_display_settings 
+                (user_id, show_remaining_time, show_description, show_importance, show_weight, show_emojis, show_date)
+                VALUES (?, 1, 1, 1, 1, 1, 1)
+            ''', (user_id,))
+            
+            # Update the specific setting
+            cursor.execute(f'''
+                UPDATE user_display_settings 
+                SET {setting} = ?
+                WHERE user_id = ?
+            ''', (int(value), user_id))
+            conn.commit()

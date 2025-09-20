@@ -105,6 +105,7 @@ class DeadlinerBot:
             [InlineKeyboardButton("🔐 Сгенерировать код доступа", callback_data="generate_access_code")],
             [InlineKeyboardButton("🔑 Ввести код доступа", callback_data="enter_code")],
             [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
+            [InlineKeyboardButton("🎨 Отображение", callback_data="display_settings")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -112,7 +113,8 @@ class DeadlinerBot:
         text = "⚙️ *Дополнительные функции:*\n\n"
         text += "🔐 Сгенерировать код доступа - создать код на основе ваших дедлайнов для передачи другим\n"
         text += "🔑 Ввести код доступа - получить дедлайны по коду от другого пользователя\n"
-        text += "📤 Экспорт дедлайнов - получить форматированный список для пересылки"
+        text += "📤 Экспорт дедлайнов - получить форматированный список для пересылки\n"
+        text += "🎨 Отображение - настроить как показываются дедлайны"
         
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -222,6 +224,11 @@ class DeadlinerBot:
             return await self.set_notification_days(update, context)
         elif query.data == "test_notifications":
             return await self.test_notifications(update, context)
+        elif query.data == "display_settings":
+            return await self.display_settings(update, context)
+        elif query.data.startswith("toggle_show_"):
+            setting = query.data.split("toggle_")[1]
+            return await self.toggle_display_setting(update, context, setting)
         elif query.data.startswith("toggle_day_"):
             day = int(query.data.split("_")[2])
             return await self.toggle_notification_day(update, context, day)
@@ -440,6 +447,7 @@ class DeadlinerBot:
         """List user's deadlines with new interface."""
         user_id = update.effective_user.id
         deadlines = self.db.get_user_deadlines(user_id)
+        display_settings = self.db.get_user_display_settings(user_id)
 
         for dl in deadlines:
             if dl['deadline_date'].tzinfo is None:
@@ -475,26 +483,9 @@ class DeadlinerBot:
             
             text = "📋 *Ваши дедлайны:*\n\n"
             
+            # Use display settings to format deadlines
             for i, dl in enumerate(deadlines, 1):
-                if dl['deadline_date'].tzinfo is None:
-                    dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
-                time_delta = dl['deadline_date'] - datetime.now(self.tz)
-                time_left = format_time_delta(time_delta)
-                
-                weight_emoji = get_weight_emoji(dl['weight'])
-                
-                # Make overdue tasks bold
-                if time_delta <= timedelta(0):
-                    text += f"{i}. {weight_emoji} ***{dl['title']}*** {time_left}\n"
-                else:
-                    # Regular tasks with normal font
-                    text += f"{i}. {weight_emoji} {dl['title']} {time_left}\n"
-                
-                text += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
-                text += f"   📊 Важность: {dl['weight']}/10\n"
-                if dl['description']:
-                    text += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
-                text += "\n"
+                text += self.format_deadline_for_display(dl, display_settings, i)
             
             # Create 3 sorting buttons with reverse functionality
             time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
@@ -913,6 +904,148 @@ class DeadlinerBot:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    def format_deadline_for_display(self, deadline: Dict, settings: Dict, index: int = None) -> str:
+        """Format a deadline according to user display settings."""
+        dl = deadline.copy()
+        if dl['deadline_date'].tzinfo is None:
+            dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+        
+        time_delta = dl['deadline_date'] - datetime.now(self.tz)
+        time_left = format_time_delta(time_delta)
+        
+        # Start with basic structure
+        result = ""
+        
+        # Add index if provided
+        if index is not None:
+            result += f"{index}. "
+        
+        # Add emoji if enabled
+        if settings['show_emojis']:
+            weight_emoji = get_weight_emoji(dl['weight'])
+            result += f"{weight_emoji} "
+        
+        # Add title (always shown)
+        if time_delta <= timedelta(0):
+            result += f"***{dl['title']}***"
+        else:
+            result += dl['title']
+        
+        # Add remaining time if enabled
+        if settings['show_remaining_time']:
+            result += f" {time_left}"
+        
+        result += "\n"
+        
+        # Add date if enabled
+        if settings['show_date']:
+            result += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
+        
+        # Add importance/weight if enabled
+        if settings['show_importance'] or settings['show_weight']:
+            if settings['show_weight']:
+                result += f"   📊 Важность: {dl['weight']}/10\n"
+        
+        # Add description if enabled and exists
+        if settings['show_description'] and dl['description']:
+            result += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
+        
+        result += "\n"
+        return result
+
+    async def display_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show display configuration settings with example."""
+        user_id = update.effective_user.id
+        settings = self.db.get_user_display_settings(user_id)
+        
+        # Create example deadlines
+        example_deadlines = [
+            {
+                'title': 'Сдать курсовую работу',
+                'description': 'Написать и оформить курсовую работу по базам данных',
+                'deadline_date': datetime.now(self.tz) + timedelta(days=2, hours=3),
+                'weight': 9
+            },
+            {
+                'title': 'Купить продукты',
+                'description': 'Молоко, хлеб, масло для завтрака',
+                'deadline_date': datetime.now(self.tz) + timedelta(hours=5),
+                'weight': 4
+            },
+            {
+                'title': 'Встреча с клиентом',
+                'description': 'Презентация нового проекта в офисе',
+                'deadline_date': datetime.now(self.tz) + timedelta(days=1, hours=10),
+                'weight': 7
+            }
+        ]
+        
+        # Format example deadlines with current settings
+        example_text = ""
+        for i, dl in enumerate(example_deadlines, 1):
+            example_text += self.format_deadline_for_display(dl, settings, i)
+        
+        text = "🎨 *Настройки отображения дедлайнов*\n\n"
+        text += "*Пример того, как выглядят ваши дедлайны:*\n\n"
+        text += example_text
+        text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+        text += "*Настройте отображение:*"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    f"⏰ Оставшееся время {'✅' if settings['show_remaining_time'] else '❌'}",
+                    callback_data="toggle_show_remaining_time"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"📄 Описание {'✅' if settings['show_description'] else '❌'}",
+                    callback_data="toggle_show_description"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"📊 Важность {'✅' if settings['show_importance'] else '❌'}",
+                    callback_data="toggle_show_importance"
+                ),
+                InlineKeyboardButton(
+                    f"🏷 Вес {'✅' if settings['show_weight'] else '❌'}",
+                    callback_data="toggle_show_weight"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"😊 Смайлики {'✅' if settings['show_emojis'] else '❌'}",
+                    callback_data="toggle_show_emojis"
+                ),
+                InlineKeyboardButton(
+                    f"📅 Дата {'✅' if settings['show_date'] else '❌'}",
+                    callback_data="toggle_show_date"
+                )
+            ],
+            [InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def toggle_display_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE, setting: str):
+        """Toggle a display setting and refresh the interface."""
+        user_id = update.effective_user.id
+        current_settings = self.db.get_user_display_settings(user_id)
+        
+        # Toggle the setting
+        new_value = not current_settings[setting]
+        self.db.update_user_display_setting(user_id, setting, new_value)
+        
+        # Refresh the display settings interface
+        await self.display_settings(update, context)
 
     async def start_edit_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start conversation for editing deadline weight."""
