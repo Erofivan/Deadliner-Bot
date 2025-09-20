@@ -129,10 +129,15 @@ class ReminderScheduler:
             text += f"⏰ Осталось: {time_text}\n\n"
         
         try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await self.bot.send_message(
                 chat_id=user_id,
                 text=text,
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                reply_markup=reply_markup
             )
         except Exception as e:
             logger.error(f"Failed to send urgent notification to {user_id}: {e}")
@@ -163,10 +168,15 @@ class ReminderScheduler:
             text += f"И еще {len(deadlines) - 3} дедлайнов..."
         
         try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await self.bot.send_message(
                 chat_id=user_id,
                 text=text,
-                parse_mode='Markdown'
+                parse_mode='Markdown',
+                reply_markup=reply_markup
             )
         except Exception as e:
             logger.error(f"Failed to send regular notification to {user_id}: {e}")
