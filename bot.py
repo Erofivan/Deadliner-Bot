@@ -2309,7 +2309,6 @@ def main():
     # Add conversation handler for deadline editing
     edit_deadline_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(bot.start_edit_deadline, pattern=r"^edit_\d+$"),
             CallbackQueryHandler(bot.start_edit_title_conv, pattern=r"^edit_title_\d+$"),
             CallbackQueryHandler(bot.start_edit_description_conv, pattern=r"^edit_desc_\d+$"),
             CallbackQueryHandler(bot.start_edit_date_conv, pattern=r"^edit_date_\d+$"),
