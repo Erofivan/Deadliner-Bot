@@ -89,6 +89,20 @@ def format_duration(delta: timedelta) -> str:
         minutes, _ = divmod(remainder, 60)
         return f"{minutes} мин."
     
+def get_smart_days_description(selected_days):
+    """Get smart description for selected days."""
+    if len(selected_days) == 7:
+        return "Каждый день"
+    elif set(selected_days) == {0, 1, 2, 3, 4}:  # Monday to Friday
+        return "Только будни"
+    elif set(selected_days) == {5, 6}:  # Saturday and Sunday
+        return "Только выходные"
+    else:
+        day_names = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']
+        active_days = [day_names[day] for day in selected_days if 0 <= day <= 6]
+        return ", ".join(active_days) if active_days else "не выбрано"
+
+
 class DeadlinerBot:
     """Main bot class handling all functionality."""
     
@@ -233,6 +247,9 @@ class DeadlinerBot:
         elif query.data.startswith("complete_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.complete_deadline(update, context, deadline_id)
+        elif query.data.startswith("edit_"):
+            deadline_id = int(query.data.split("_")[1])
+            return await self.start_edit_deadline_full(update, context, deadline_id)
         elif query.data.startswith("delete_completed_"):
             deadline_id = int(query.data.split("_")[2])
             return await self.delete_completed_deadline(update, context, deadline_id)
@@ -261,8 +278,6 @@ class DeadlinerBot:
         elif query.data.startswith("toggle_day_"):
             day = int(query.data.split("_")[2])
             return await self.toggle_notification_day(update, context, day)
-        elif query.data == "save_notification_days":
-            return await self.save_notification_days_confirm(update, context)
     
     async def start_add_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start conversation for adding deadline."""
@@ -472,11 +487,18 @@ class DeadlinerBot:
         
         raise ValueError("Неверный формат даты")
     
-    async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = 'time_asc'):
+    async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = None):
         """List user's deadlines with new interface."""
         user_id = update.effective_user.id
         deadlines = self.db.get_user_deadlines(user_id)
         display_settings = self.db.get_user_display_settings(user_id)
+        
+        # Use user's saved sort preference if no specific sort requested
+        if sort_by is None:
+            sort_by = display_settings.get('sort_preference', 'importance_desc')
+        else:
+            # Save the new sort preference
+            self.db.update_user_sort_preference(user_id, sort_by)
 
         for dl in deadlines:
             if dl['deadline_date'].tzinfo is None:
@@ -490,47 +512,58 @@ class DeadlinerBot:
                 [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
             ]
         else:
-            # Sort deadlines based on selected criteria
-            if sort_by == 'time_asc':
-                # Most urgent first (ascending by remaining time)
-                deadlines = sorted(deadlines, key=lambda d: abs((d['deadline_date'] - datetime.now(self.tz)).total_seconds()))
-            elif sort_by == 'time_desc':
-                # Least urgent first (descending by remaining time)
-                deadlines = sorted(deadlines, key=lambda d: abs((d['deadline_date'] - datetime.now(self.tz)).total_seconds()), reverse=True)
-            elif sort_by == 'importance_asc':
-                # Least important first
-                deadlines = sorted(deadlines, key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']))
-            elif sort_by == 'importance_desc':
-                # Most important first (default from importance calculator)
-                deadlines = sort_deadlines_by_importance(deadlines)
-            elif sort_by == 'weight_asc':
-                # Lowest weight first
-                deadlines = sorted(deadlines, key=lambda d: d['weight'])
-            elif sort_by == 'weight_desc':
-                # Highest weight first
-                deadlines = sorted(deadlines, key=lambda d: d['weight'], reverse=True)
+            # Separate overdue and regular deadlines
+            now = datetime.now(self.tz)
+            overdue_deadlines = [dl for dl in deadlines if dl['deadline_date'] < now]
+            regular_deadlines = [dl for dl in deadlines if dl['deadline_date'] >= now]
+            
+            # Sort each group based on selected criteria
+            def sort_deadlines_group(group, sort_by):
+                if sort_by == 'time_asc':
+                    return sorted(group, key=lambda d: abs((d['deadline_date'] - now).total_seconds()))
+                elif sort_by == 'time_desc':
+                    return sorted(group, key=lambda d: abs((d['deadline_date'] - now).total_seconds()), reverse=True)
+                elif sort_by == 'importance_asc':
+                    return sorted(group, key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']))
+                elif sort_by == 'importance_desc':
+                    return sort_deadlines_by_importance(group)
+                return group
+            
+            overdue_deadlines = sort_deadlines_group(overdue_deadlines, sort_by)
+            regular_deadlines = sort_deadlines_group(regular_deadlines, sort_by)
             
             text = "📋 *Ваши дедлайны:*\n\n"
             
-            # Use display settings to format deadlines
-            for i, dl in enumerate(deadlines, 1):
-                text += self.format_deadline_for_display(dl, display_settings, i)
+            # Show overdue deadlines first
+            if overdue_deadlines:
+                counter = 1
+                for dl in overdue_deadlines:
+                    text += self.format_deadline_for_display(dl, display_settings, counter)
+                    counter += 1
+                
+                # Add separator if there are also regular deadlines
+                if regular_deadlines:
+                    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    
+            # Show regular deadlines
+            if regular_deadlines:
+                counter = len(overdue_deadlines) + 1
+                for dl in regular_deadlines:
+                    text += self.format_deadline_for_display(dl, display_settings, counter)
+                    counter += 1
             
-            # Create 3 sorting buttons with reverse functionality
+            # Create 2 sorting buttons with reverse functionality
             time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
             importance_arrow = "⬆️" if sort_by == 'importance_asc' else "⬇️" if sort_by == 'importance_desc' else ""  
-            weight_arrow = "⬆️" if sort_by == 'weight_asc' else "⬇️" if sort_by == 'weight_desc' else ""
             
             # Toggle sort direction on repeated click
             time_callback = "sort_time_desc" if sort_by == 'time_asc' else "sort_time_asc"
             importance_callback = "sort_importance_desc" if sort_by == 'importance_asc' else "sort_importance_asc" 
-            weight_callback = "sort_weight_desc" if sort_by == 'weight_asc' else "sort_weight_asc"
             
             keyboard = [
                 [
                     InlineKeyboardButton(f"⏰ По времени {time_arrow}", callback_data=time_callback),
-                    InlineKeyboardButton(f"🎯 По важности {importance_arrow}", callback_data=importance_callback),
-                    InlineKeyboardButton(f"🏷 По весу {weight_arrow}", callback_data=weight_callback)
+                    InlineKeyboardButton(f"🎯 По важности {importance_arrow}", callback_data=importance_callback)
                 ],
                 [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
                 [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
@@ -640,20 +673,21 @@ class DeadlinerBot:
         """Show completed deadlines."""
         user_id = update.effective_user.id
         completed = self.db.get_completed_deadlines(user_id)
+        display_settings = self.db.get_user_display_settings(user_id)
+        
+        # Fix timezone for completed deadlines
+        for dl in completed:
+            if dl['deadline_date'].tzinfo is None:
+                dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
         
         if not completed:
             text = "✅ У вас пока нет завершенных дедлайнов."
         else:
             text = "✅ *Завершенные дедлайны:*\n\n"
             
+            # Use display settings to format completed deadlines
             for i, dl in enumerate(completed, 1):
-                weight_emoji = get_weight_emoji(dl['weight'])
-                text += f"{i}. {weight_emoji} <s>{dl['title']}</s>\n"
-                text += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
-                text += f"   📊 Важность: {dl['weight']}/10\n"
-                if dl['description']:
-                    text += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
-                text += "\n"
+                text += self.format_deadline_for_display(dl, display_settings, i)
         
         keyboard = [
             [InlineKeyboardButton("🔄 Восстановить", callback_data="restore_completed_deadlines")],
@@ -748,10 +782,8 @@ class DeadlinerBot:
         
         times_str = ", ".join(settings['times']) if settings['times'] else "не настроено"
         
-        # Convert day numbers to day names
-        day_names = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']
-        active_days = [day_names[day] for day in settings['days'] if 0 <= day <= 6]
-        days_str = ", ".join(active_days) if active_days else "не выбрано"
+        # Convert day numbers to day names with smart descriptions
+        days_str = get_smart_days_description(settings['days'])
         
         text = f"🔔 *Настройки уведомлений:*\n\n"
         text += f"⏰ Время: {times_str}\n"
@@ -861,8 +893,8 @@ class DeadlinerBot:
             button_text = f"✅ {day_name}" if is_selected else f"◻️ {day_name}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_day_{i}")])
         
+        # Only back button, changes are saved automatically
         keyboard.append([
-            InlineKeyboardButton("💾 Сохранить", callback_data="save_notification_days"),
             InlineKeyboardButton("🔙 Назад", callback_data="notification_settings")
         ])
         
@@ -884,19 +916,6 @@ class DeadlinerBot:
         
         # Update interface
         await self.set_notification_days(update, context)
-    
-    async def save_notification_days_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Confirm saving notification days."""
-        user_id = update.effective_user.id
-        settings = self.db.get_user_notification_settings(user_id)
-        
-        day_names = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']
-        selected_day_names = [day_names[day] for day in settings['days']]
-        
-        await update.callback_query.answer(
-            f"✅ Дни сохранены: {', '.join(selected_day_names)}"
-        )
-        await self.notification_settings(update, context)
     
     async def test_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send a test notification to verify the system is working."""
@@ -1234,6 +1253,249 @@ class DeadlinerBot:
         
         # Refresh the display settings interface
         await self.display_settings(update, context)
+
+    async def start_edit_deadline_full(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
+        """Start full editing flow for a deadline."""
+        user_id = update.effective_user.id
+        
+        # Get deadline from database
+        deadlines = self.db.get_user_deadlines(user_id)
+        deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
+        
+        if not deadline:
+            await update.callback_query.answer("❌ Дедлайн не найден")
+            return await self.edit_deadlines(update, context)
+        
+        # Store deadline info for editing
+        context.user_data['edit_deadline_id'] = deadline_id
+        context.user_data['original_title'] = deadline['title']
+        context.user_data['original_description'] = deadline['description'] or ""
+        context.user_data['original_weight'] = deadline['weight']
+        context.user_data['original_deadline_date'] = deadline['deadline_date']
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"detail_{deadline_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = f"✏️ *Редактирование дедлайна*\n\n📝 **{deadline['title']}**\n\nВведите новое название дедлайна:"
+        
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        return EDIT_TITLE
+
+    async def edit_title(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Get edited deadline title."""
+        context.user_data['title'] = update.message.text
+        
+        deadline_id = context.user_data.get('edit_deadline_id')
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_title")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📄 Теперь введите описание дедлайна "
+            "(или отправьте /skip чтобы оставить без изменений):",
+            reply_markup=reply_markup
+        )
+        
+        return EDIT_DESCRIPTION
+
+    async def edit_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Get edited deadline description."""
+        if update.message.text == "/skip":
+            context.user_data['description'] = context.user_data.get('original_description', "")
+        else:
+            context.user_data['description'] = update.message.text
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_description")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📊 Введите важность дедлайна (число от 0 до 10):\n\n"
+            "• 0-2: Низкая важность\n"
+            "• 3-5: Средняя важность\n" 
+            "• 6-8: Высокая важность\n"
+            "• 9-10: Критическая важность",
+            reply_markup=reply_markup
+        )
+        
+        return EDIT_WEIGHT
+
+    async def edit_weight(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Get edited deadline weight."""
+        try:
+            weight_text = update.message.text.strip()
+            weight = int(weight_text)
+            
+            if weight < 0 or weight > 10:
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_weight")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(
+                    "❌ Важность должна быть числом от 0 до 10. Попробуйте еще раз:",
+                    reply_markup=reply_markup
+                )
+                return EDIT_WEIGHT
+            
+            context.user_data['weight'] = weight
+            
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_weight")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "📅 Введите дату и время дедлайна в одном из форматов:\n\n"
+                "• 2024-12-31 15:30\n"
+                "• 31.12.2024 15:30\n"
+                "• завтра 15:30\n"
+                "• послезавтра 10:00\n"
+                "• понедельник 14:00",
+                reply_markup=reply_markup
+            )
+            
+            return EDIT_DATE
+            
+        except ValueError:
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_weight")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                "❌ Пожалуйста, введите число от 0 до 10:",
+                reply_markup=reply_markup
+            )
+            return EDIT_WEIGHT
+
+    async def edit_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Parse and validate edited deadline date."""
+        date_text = update.message.text.strip().lower()
+        
+        try:
+            deadline_date = self.parse_date(date_text)
+            context.user_data['deadline_date'] = deadline_date
+            
+            # Save all changes to database
+            deadline_id = context.user_data.get('edit_deadline_id')
+            user_id = update.effective_user.id
+            title = context.user_data['title']
+            description = context.user_data['description']
+            weight = context.user_data['weight']
+            
+            success = self.db.update_deadline(
+                deadline_id, user_id, 
+                title=title, 
+                description=description, 
+                weight=weight, 
+                deadline_date=deadline_date
+            )
+            
+            if success:
+                weight_emoji = get_weight_emoji(weight)
+                importance_desc = get_importance_description(weight, deadline_date)
+                
+                success_text = (
+                    f"✅ Дедлайн обновлен!\\n\\n"
+                    f"📝 {title}\\n"
+                    f"📅 {deadline_date.strftime('%d.%m.%Y %H:%M')}\\n"
+                    f"📊 {weight_emoji} Важность: {weight}/10\\n"
+                    f"🎯 {importance_desc}\\n"
+                    f"🆔 ID: {deadline_id}"
+                )
+                
+                if description:
+                    success_text += f"\\n📄 {description}"
+                
+                keyboard = [
+                    [InlineKeyboardButton("📋 К деталям", callback_data=f"detail_{deadline_id}")],
+                    [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    success_text,
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text("❌ Не удалось обновить дедлайн")
+            
+            context.user_data.clear()
+            return ConversationHandler.END
+            
+        except ValueError as e:
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_date")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                f"❌ Не удалось распознать дату: {e}\\n\\n"
+                "Попробуйте еще раз в формате:\\n"
+                "• 2024-12-31 15:30\\n"
+                "• 31.12.2024 15:30\\n"
+                "• завтра 15:30",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            return EDIT_DATE
+
+    # Edit flow back button handlers
+    async def edit_deadline_back_to_title(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Go back to editing title."""
+        deadline_id = context.user_data.get('edit_deadline_id')
+        original_title = context.user_data.get('original_title', '')
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"detail_{deadline_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = f"✏️ *Редактирование дедлайна*\\n\\n📝 **{original_title}**\\n\\nВведите новое название дедлайна:"
+        
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        return EDIT_TITLE
+
+    async def edit_deadline_back_to_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Go back to editing description."""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_title")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            "📄 Теперь введите описание дедлайна "
+            "(или отправьте /skip чтобы оставить без изменений):",
+            reply_markup=reply_markup
+        )
+        return EDIT_DESCRIPTION
+
+    async def edit_deadline_back_to_weight(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Go back to editing weight."""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_description")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            "📊 Введите важность дедлайна (число от 0 до 10):\\n\\n"
+            "• 0-2: Низкая важность\\n"
+            "• 3-5: Средняя важность\\n"
+            "• 6-8: Высокая важность\\n"
+            "• 9-10: Критическая важность",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return EDIT_WEIGHT
+
+    async def edit_deadline_back_to_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Go back to editing date."""
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit_weight")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            "📅 Введите дату и время дедлайна в одном из форматов:\\n\\n"
+            "• 2024-12-31 15:30\\n"
+            "• 31.12.2024 15:30\\n"
+            "• завтра 15:30\\n"
+            "• послезавтра 10:00\\n"
+            "• понедельник 14:00",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return EDIT_DATE
+
+    async def deadline_detail_from_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Go back to deadline detail from edit flow."""
+        query = update.callback_query
+        deadline_id = int(query.data.split("_")[1])
+        context.user_data.clear()
+        await self.deadline_detail(update, context, deadline_id)
+        return ConversationHandler.END
 
     async def start_edit_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start conversation for editing deadline weight."""
@@ -1743,6 +2005,23 @@ def main():
             EDIT_DEADLINE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_deadline_weight),
                 CallbackQueryHandler(bot.edit_deadline_back, pattern="^detail_")
+            ],
+            EDIT_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.edit_title),
+                CallbackQueryHandler(bot.edit_deadline_back_to_title, pattern="^back_to_edit_title$"),
+                CallbackQueryHandler(bot.deadline_detail_from_edit, pattern="^detail_")
+            ],
+            EDIT_DESCRIPTION: [
+                MessageHandler(filters.TEXT, bot.edit_description),
+                CallbackQueryHandler(bot.edit_deadline_back_to_description, pattern="^back_to_edit_description$")
+            ],
+            EDIT_WEIGHT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.edit_weight),
+                CallbackQueryHandler(bot.edit_deadline_back_to_weight, pattern="^back_to_edit_weight$")
+            ],
+            EDIT_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.edit_date),
+                CallbackQueryHandler(bot.edit_deadline_back_to_date, pattern="^back_to_edit_date$")
             ]
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)]
