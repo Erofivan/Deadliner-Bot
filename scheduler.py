@@ -104,6 +104,71 @@ class ReminderScheduler:
         except Exception as e:
             logger.error(f"Error sending notifications to user {user_id}: {e}")
     
+    async def send_test_notification(self, user_id: int):
+        """Send a test notification to verify the system is working."""
+        try:
+            # Get active deadlines for this user
+            deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+            
+            if not deadlines:
+                return False  # No deadlines to notify about
+            
+            # For testing, we'll send notification about the most important deadline
+            # or the one that's due soonest, regardless of normal filtering criteria
+            test_deadlines = []
+            
+            for deadline in deadlines:
+                # Ensure deadline_date has timezone information
+                if deadline['deadline_date'].tzinfo is None:
+                    deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
+                test_deadlines.append(deadline)
+            
+            # Sort by importance score to get the most relevant for testing
+            from importance_calculator import calculate_importance_score
+            test_deadlines.sort(
+                key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']), 
+                reverse=True
+            )
+            
+            # Take the top deadline for test notification
+            top_deadline = test_deadlines[0]
+            await self._send_test_notification_message(user_id, top_deadline)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending test notification to user {user_id}: {e}")
+            return False
+    
+    async def _send_test_notification_message(self, user_id: int, deadline: dict):
+        """Send the actual test notification message."""
+        text = "🧪 *ТЕСТОВОЕ УВЕДОМЛЕНИЕ*\n\n"
+        text += "✅ Система уведомлений работает правильно!\n\n"
+        
+        # Get user display settings to use standardized formatting
+        display_settings = self.db.get_user_display_settings(user_id)
+        
+        # Format the deadline using the same method as regular notifications
+        formatted_deadline = self.bot.format_deadline_for_display(deadline, display_settings, 1)
+        text += "📝 *Пример уведомления с вашим дедлайном:*\n"
+        text += formatted_deadline
+        
+        text += "\n💡 *Примечание:* Это тестовое уведомление. Обычные уведомления приходят согласно вашим настройкам времени и важности дедлайнов."
+        
+        try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Failed to send test notification to {user_id}: {e}")
+    
     async def _send_urgent_notification(self, user_id: int, deadlines: list):
         """Send urgent notification message."""
         text = "🚨 *СРОЧНЫЕ НАПОМИНАНИЯ*\n\n"
