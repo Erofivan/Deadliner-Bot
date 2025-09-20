@@ -1076,38 +1076,16 @@ class DeadlinerBot:
         await self.set_notification_days(update, context)
     
     async def test_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Send a test notification to verify the system is working."""
+        """Show deadlines in the same format as 'Мои дедлайны' for testing notifications."""
         user_id = update.effective_user.id
         
-        try:
-            # Get user's deadlines to include in test
-            deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
-            
-            if deadlines:
-                # Use scheduler to send test notification
-                success = await self.scheduler.send_test_notification(user_id)
-                
-                if success:
-                    text = "🧪 *Тест уведомлений выполнен!*\n\n"
-                    text += "✅ Тестовое уведомление отправлено! Проверьте чат - оно должно прийти прямо сейчас.\n\n"
-                    text += f"🕐 Время: {datetime.now(self.tz).strftime('%H:%M')} (МСК)\n"
-                    text += f"📅 День недели: {datetime.now(self.tz).weekday()}\n\n"
-                    text += "ℹ️ Если уведомление не пришло, проверьте, что бот может отправлять вам сообщения."
-                else:
-                    text = "🧪 *Ошибка при тестировании*\n\n"
-                    text += "❌ Не удалось отправить тестовое уведомление.\n\n"
-                    text += "Попробуйте позже или обратитесь к администратору."
-            else:
-                text = "🧪 *Тест уведомлений*\n\n"
-                text += "❌ Дедлайнов нет.\n\n"
-                text += f"🕐 Текущее время: {datetime.now(self.tz).strftime('%H:%M')} (МСК)\n"
-                text += f"📅 День недели: {datetime.now(self.tz).weekday()}\n\n"
-                text += "Создайте дедлайн и попробуйте тест снова."
-                
-        except Exception as e:
-            logger.error(f"Error testing notifications: {e}")
-            text = "❌ *Ошибка при тестировании уведомлений*\n\n"
-            text += "Проверьте настройки и попробуйте позже."
+        # Use the same unified method as 'Мои дедлайны' to get deadline content
+        deadline_content = self.generate_deadline_list_text(user_id, include_header=False)
+        
+        if deadline_content == "Дедлайнов нет":
+            text = f"🧪 *Тест уведомлений*\n\n📋 {deadline_content}"
+        else:
+            text = f"🧪 *Тест уведомлений*\n\n📋 Ваши дедлайны:\n\n{deadline_content}"
         
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="notification_settings")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
