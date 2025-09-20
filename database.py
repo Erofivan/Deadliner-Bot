@@ -39,9 +39,17 @@ class Database:
                     weight INTEGER NOT NULL DEFAULT 5,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     completed INTEGER DEFAULT 0,
+                    completed_at TIMESTAMP NULL,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
+            
+            # Add completed_at column to existing table if it doesn't exist
+            try:
+                cursor.execute('ALTER TABLE deadlines ADD COLUMN completed_at TIMESTAMP NULL')
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
             
             # Add user_notification_settings table
             cursor.execute('''
@@ -82,9 +90,17 @@ class Database:
                     show_weight INTEGER DEFAULT 1,
                     show_emojis INTEGER DEFAULT 1,
                     show_date INTEGER DEFAULT 1,
+                    show_time_tracking INTEGER DEFAULT 1,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
+            
+            # Add show_time_tracking column to existing table if it doesn't exist
+            try:
+                cursor.execute('ALTER TABLE user_display_settings ADD COLUMN show_time_tracking INTEGER DEFAULT 1')
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
             
             conn.commit()
     
@@ -106,8 +122,8 @@ class Database:
             # Initialize default display settings
             cursor.execute('''
                 INSERT OR IGNORE INTO user_display_settings 
-                (user_id, show_remaining_time, show_description, show_importance, show_weight, show_emojis, show_date)
-                VALUES (?, 1, 1, 1, 1, 1, 1)
+                (user_id, show_remaining_time, show_description, show_importance, show_weight, show_emojis, show_date, show_time_tracking)
+                VALUES (?, 1, 1, 1, 1, 1, 1, 1)
             ''', (user_id,))
             
             conn.commit()
@@ -210,7 +226,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE deadlines 
-                SET completed = 1 
+                SET completed = 1, completed_at = datetime('now')
                 WHERE id = ? AND user_id = ?
             ''', (deadline_id, user_id))
             conn.commit()
@@ -343,7 +359,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE deadlines 
-                SET completed = 0 
+                SET completed = 0, completed_at = NULL
                 WHERE id = ? AND user_id = ?
             ''', (deadline_id, user_id))
             conn.commit()
@@ -404,7 +420,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT show_remaining_time, show_description, show_importance, 
-                       show_weight, show_emojis, show_date
+                       show_weight, show_emojis, show_date, show_time_tracking
                 FROM user_display_settings 
                 WHERE user_id = ?
             ''', (user_id,))
@@ -416,7 +432,8 @@ class Database:
                     'show_importance': bool(result[2]),
                     'show_weight': bool(result[3]),
                     'show_emojis': bool(result[4]),
-                    'show_date': bool(result[5])
+                    'show_date': bool(result[5]),
+                    'show_time_tracking': bool(result[6]) if len(result) > 6 else True
                 }
             else:
                 # Return default settings
@@ -426,7 +443,8 @@ class Database:
                     'show_importance': True,
                     'show_weight': True,
                     'show_emojis': True,
-                    'show_date': True
+                    'show_date': True,
+                    'show_time_tracking': True
                 }
     
     def update_user_display_setting(self, user_id: int, setting: str, value: bool):
@@ -436,8 +454,8 @@ class Database:
             # Ensure user exists in display settings
             cursor.execute('''
                 INSERT OR IGNORE INTO user_display_settings 
-                (user_id, show_remaining_time, show_description, show_importance, show_weight, show_emojis, show_date)
-                VALUES (?, 1, 1, 1, 1, 1, 1)
+                (user_id, show_remaining_time, show_description, show_importance, show_weight, show_emojis, show_date, show_time_tracking)
+                VALUES (?, 1, 1, 1, 1, 1, 1, 1)
             ''', (user_id,))
             
             # Update the specific setting

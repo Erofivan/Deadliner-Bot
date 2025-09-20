@@ -63,6 +63,30 @@ def format_time_delta(delta: timedelta) -> str:
         return f"**(просрочено на {time_str})**"
     else:
         return f"(осталось {time_str})"
+
+
+def format_duration(delta: timedelta) -> str:
+    """Format duration for time tracking display."""
+    days = delta.days
+    hours, remainder = divmod(delta.seconds, 3600)
+    
+    if days >= 7:
+        weeks = days // 7
+        remaining_days = days % 7
+        if remaining_days == 0:
+            return f"{weeks} нед."
+        else:
+            return f"{weeks} нед. {remaining_days} д."
+    elif days > 0:
+        if hours > 0:
+            return f"{days} д. {hours} ч."
+        else:
+            return f"{days} д."
+    elif hours > 0:
+        return f"{hours} ч."
+    else:
+        minutes, _ = divmod(remainder, 60)
+        return f"{minutes} мин."
     
 class DeadlinerBot:
     """Main bot class handling all functionality."""
@@ -951,6 +975,29 @@ class DeadlinerBot:
         if settings['show_description'] and dl['description']:
             result += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
         
+        # Add time tracking information if enabled
+        if settings.get('show_time_tracking', True):
+            created_at = dl.get('created_at')
+            completed_at = dl.get('completed_at')
+            
+            if created_at:
+                if isinstance(created_at, str):
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=self.tz)
+                
+                total_time = dl['deadline_date'] - created_at
+                result += f"   ⏱️ Общее время: {format_duration(total_time)}\n"
+                
+                if completed_at and dl.get('completed'):
+                    if isinstance(completed_at, str):
+                        completed_at = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+                    if completed_at.tzinfo is None:
+                        completed_at = completed_at.replace(tzinfo=self.tz)
+                    
+                    work_time = completed_at - created_at
+                    result += f"   ✅ Время выполнения: {format_duration(work_time)}\n"
+        
         result += "\n"
         return result
 
@@ -965,19 +1012,28 @@ class DeadlinerBot:
                 'title': 'Сдать курсовую работу',
                 'description': 'Написать и оформить курсовую работу по базам данных',
                 'deadline_date': datetime.now(self.tz) + timedelta(days=2, hours=3),
-                'weight': 9
+                'weight': 9,
+                'created_at': datetime.now(self.tz) - timedelta(days=14),
+                'completed': False,
+                'completed_at': None
             },
             {
                 'title': 'Купить продукты',
                 'description': 'Молоко, хлеб, масло для завтрака',
                 'deadline_date': datetime.now(self.tz) + timedelta(hours=5),
-                'weight': 4
+                'weight': 4,
+                'created_at': datetime.now(self.tz) - timedelta(hours=2),
+                'completed': False,
+                'completed_at': None
             },
             {
                 'title': 'Встреча с клиентом',
                 'description': 'Презентация нового проекта в офисе',
-                'deadline_date': datetime.now(self.tz) + timedelta(days=1, hours=10),
-                'weight': 7
+                'deadline_date': datetime.now(self.tz) - timedelta(hours=5),  # Completed example
+                'weight': 7,
+                'created_at': datetime.now(self.tz) - timedelta(days=3),
+                'completed': True,
+                'completed_at': datetime.now(self.tz) - timedelta(hours=5)
             }
         ]
         
@@ -1023,6 +1079,12 @@ class DeadlinerBot:
                 InlineKeyboardButton(
                     f"📅 Дата {'✅' if settings['show_date'] else '❌'}",
                     callback_data="toggle_show_date"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"⏱️ Время выполнения {'✅' if settings.get('show_time_tracking', True) else '❌'}",
+                    callback_data="toggle_show_time_tracking"
                 )
             ],
             [InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]
