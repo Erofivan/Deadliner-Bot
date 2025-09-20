@@ -130,6 +130,7 @@ class DeadlinerBot:
             [InlineKeyboardButton("🔑 Ввести код доступа", callback_data="enter_code")],
             [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
             [InlineKeyboardButton("🎨 Отображение", callback_data="display_settings")],
+            [InlineKeyboardButton("📊 Статистика", callback_data="statistics")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -138,7 +139,8 @@ class DeadlinerBot:
         text += "🔐 Сгенерировать код доступа - создать код на основе ваших дедлайнов для передачи другим\n"
         text += "🔑 Ввести код доступа - получить дедлайны по коду от другого пользователя\n"
         text += "📤 Экспорт дедлайнов - получить форматированный список для пересылки\n"
-        text += "🎨 Отображение - настроить как показываются дедлайны"
+        text += "🎨 Отображение - настроить как показываются дедлайны\n"
+        text += "📊 Статистика - подробная аналитика ваших дедлайнов"
         
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -250,6 +252,8 @@ class DeadlinerBot:
             return await self.test_notifications(update, context)
         elif query.data == "display_settings":
             return await self.display_settings(update, context)
+        elif query.data == "statistics":
+            return await self.statistics(update, context)
         elif query.data.startswith("toggle_show_"):
             setting = query.data.split("toggle_")[1]
             return await self.toggle_display_setting(update, context, setting)
@@ -1090,6 +1094,127 @@ class DeadlinerBot:
             [InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]
         ]
         
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    async def statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show detailed statistics about user's deadlines."""
+        user_id = update.effective_user.id
+        
+        # Get all deadlines (completed and active)
+        active_deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+        completed_deadlines = self.db.get_user_deadlines(user_id, include_completed=True)
+        all_deadlines = [dl for dl in completed_deadlines if dl.get('completed')]
+        
+        # Ensure timezone info
+        for dl in active_deadlines + all_deadlines:
+            if dl['deadline_date'].tzinfo is None:
+                dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+            if dl.get('created_at') and isinstance(dl['created_at'], str):
+                dl['created_at'] = datetime.fromisoformat(dl['created_at'].replace('Z', '+00:00'))
+            if dl.get('completed_at') and isinstance(dl['completed_at'], str):
+                dl['completed_at'] = datetime.fromisoformat(dl['completed_at'].replace('Z', '+00:00'))
+        
+        text = "📊 *Статистика дедлайнов*\n\n"
+        
+        # Basic counts
+        total_completed = len(all_deadlines)
+        total_active = len(active_deadlines)
+        
+        text += f"📈 *Основная статистика:*\n"
+        text += f"✅ Завершенных дедлайнов: {total_completed}\n"
+        text += f"⏳ Активных дедлайнов: {total_active}\n"
+        text += f"📋 Всего дедлайнов: {total_completed + total_active}\n\n"
+        
+        if total_completed > 0:
+            # Calculate completion statistics
+            completion_times = []
+            total_times = []
+            weights = []
+            
+            for dl in all_deadlines:
+                if dl.get('created_at') and dl.get('completed_at'):
+                    created = dl['created_at']
+                    completed = dl['completed_at']
+                    deadline = dl['deadline_date']
+                    
+                    # Fix timezone issues
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=self.tz)
+                    if completed.tzinfo is None:
+                        completed = completed.replace(tzinfo=self.tz)
+                    
+                    completion_time = completed - created
+                    total_time = deadline - created
+                    
+                    completion_times.append((dl, completion_time))
+                    total_times.append((dl, total_time))
+                
+                weights.append((dl, dl['weight']))
+            
+            # Find interesting records
+            if completion_times:
+                fastest = min(completion_times, key=lambda x: x[1].total_seconds())
+                longest = max(completion_times, key=lambda x: x[1].total_seconds())
+                
+                text += f"🏃 *Самый быстрый дедлайн:*\n"
+                text += f"   {get_weight_emoji(fastest[0]['weight'])} {fastest[0]['title']}\n"
+                text += f"   ⏱️ Выполнен за: {format_duration(fastest[1])}\n\n"
+                
+                text += f"🐌 *Самый долгий по выполнению:*\n"
+                text += f"   {get_weight_emoji(longest[0]['weight'])} {longest[0]['title']}\n"
+                text += f"   ⏱️ Выполнялся: {format_duration(longest[1])}\n\n"
+            
+            if weights:
+                hardest = max(weights, key=lambda x: x[1])
+                easiest = min(weights, key=lambda x: x[1])
+                
+                text += f"🔥 *Самый сложный дедлайн:*\n"
+                text += f"   {get_weight_emoji(hardest[0]['weight'])} {hardest[0]['title']}\n"
+                text += f"   📊 Важность: {hardest[0]['weight']}/10\n\n"
+                
+                text += f"😌 *Самый легкий дедлайн:*\n"
+                text += f"   {get_weight_emoji(easiest[0]['weight'])} {easiest[0]['title']}\n"
+                text += f"   📊 Важность: {easiest[0]['weight']}/10\n\n"
+            
+            # Average statistics
+            if completion_times:
+                avg_completion = sum(ct[1].total_seconds() for ct in completion_times) / len(completion_times)
+                text += f"📊 *Средняя статистика:*\n"
+                text += f"   ⏱️ Среднее время выполнения: {format_duration(timedelta(seconds=avg_completion))}\n"
+                
+                avg_weight = sum(w[1] for w in weights) / len(weights)
+                text += f"   📈 Средняя важность: {avg_weight:.1f}/10\n\n"
+        
+        if total_active > 0:
+            # Active deadline statistics
+            overdue = [dl for dl in active_deadlines if dl['deadline_date'] < datetime.now(self.tz)]
+            urgent = [dl for dl in active_deadlines 
+                     if dl['deadline_date'] > datetime.now(self.tz) and 
+                     (dl['deadline_date'] - datetime.now(self.tz)).total_seconds() < 24*3600]
+            
+            text += f"⚡ *Активные дедлайны:*\n"
+            text += f"   🚨 Просрочено: {len(overdue)}\n"
+            text += f"   ⏰ Срочные (< 24ч): {len(urgent)}\n"
+            text += f"   📝 Обычные: {total_active - len(overdue) - len(urgent)}\n\n"
+            
+            if active_deadlines:
+                heaviest_active = max(active_deadlines, key=lambda x: x['weight'])
+                lightest_active = min(active_deadlines, key=lambda x: x['weight'])
+                
+                text += f"🎯 *Текущие экстремумы:*\n"
+                text += f"   🔥 Самый важный: {heaviest_active['title']} ({heaviest_active['weight']}/10)\n"
+                text += f"   😌 Самый простой: {lightest_active['title']} ({lightest_active['weight']}/10)\n"
+        
+        if total_completed == 0 and total_active == 0:
+            text += "🌟 *Пока нет данных для статистики*\n"
+            text += "Создайте и завершите несколько дедлайнов, чтобы увидеть интересную аналитику!"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         if update.callback_query:
