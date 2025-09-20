@@ -1,6 +1,7 @@
 """Importance calculation utilities for deadlines."""
 import math
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Dict
 
 
@@ -19,7 +20,9 @@ def calculate_importance_score(weight, deadline_date: datetime) -> float:
     Returns:
         Importance score (higher = more important)
     """
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Europe/Moscow"))
+    if deadline_date.tzinfo is None:
+        deadline_date = deadline_date.replace(tzinfo=ZoneInfo("Europe/Moscow"))
     time_delta = deadline_date - now
     
     # Convert to hours remaining (can be negative for overdue)
