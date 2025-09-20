@@ -101,6 +101,13 @@ class Database:
             except sqlite3.OperationalError:
                 # Column already exists
                 pass
+                
+            # Add sort_preference column to existing table if it doesn't exist
+            try:
+                cursor.execute('ALTER TABLE user_display_settings ADD COLUMN sort_preference TEXT DEFAULT "importance_desc"')
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
             
             conn.commit()
     
@@ -420,7 +427,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT show_remaining_time, show_description, show_importance, 
-                       show_weight, show_emojis, show_date, show_time_tracking
+                       show_weight, show_emojis, show_date, show_time_tracking, sort_preference
                 FROM user_display_settings 
                 WHERE user_id = ?
             ''', (user_id,))
@@ -433,7 +440,8 @@ class Database:
                     'show_weight': bool(result[3]),
                     'show_emojis': bool(result[4]),
                     'show_date': bool(result[5]),
-                    'show_time_tracking': bool(result[6]) if len(result) > 6 else True
+                    'show_time_tracking': bool(result[6]) if len(result) > 6 else True,
+                    'sort_preference': result[7] if len(result) > 7 and result[7] else 'importance_desc'
                 }
             else:
                 # Return default settings
@@ -444,7 +452,8 @@ class Database:
                     'show_weight': True,
                     'show_emojis': True,
                     'show_date': True,
-                    'show_time_tracking': True
+                    'show_time_tracking': True,
+                    'sort_preference': 'importance_desc'
                 }
     
     def update_user_display_setting(self, user_id: int, setting: str, value: bool):
@@ -464,4 +473,23 @@ class Database:
                 SET {setting} = ?
                 WHERE user_id = ?
             ''', (int(value), user_id))
+            conn.commit()
+            
+    def update_user_sort_preference(self, user_id: int, sort_preference: str):
+        """Update sort preference for a user."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            # Ensure user exists in display settings
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_display_settings 
+                (user_id, show_remaining_time, show_description, show_importance, show_weight, show_emojis, show_date, show_time_tracking, sort_preference)
+                VALUES (?, 1, 1, 1, 1, 1, 1, 1, ?)
+            ''', (user_id, sort_preference))
+            
+            # Update the sort preference
+            cursor.execute('''
+                UPDATE user_display_settings 
+                SET sort_preference = ?
+                WHERE user_id = ?
+            ''', (sort_preference, user_id))
             conn.commit()

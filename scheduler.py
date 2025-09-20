@@ -79,6 +79,10 @@ class ReminderScheduler:
             urgent_deadlines = []
             
             for deadline in deadlines:
+                # Ensure deadline_date has timezone information
+                if deadline['deadline_date'].tzinfo is None:
+                    deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
+                    
                 importance_score = calculate_importance_score(deadline['weight'], deadline['deadline_date'])
                 
                 # Send notifications for high importance items (score > 5)
@@ -105,6 +109,10 @@ class ReminderScheduler:
         text = "🚨 *СРОЧНЫЕ НАПОМИНАНИЯ*\n\n"
         
         for deadline in deadlines[:5]:  # Limit to 5 most urgent
+            # Ensure deadline_date has timezone information
+            if deadline['deadline_date'].tzinfo is None:
+                deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
+                
             time_delta = deadline['deadline_date'] - datetime.now(self.tz)
             weight_emoji = get_weight_emoji(deadline['weight'])
             
@@ -134,6 +142,10 @@ class ReminderScheduler:
         text = "⏰ *Напоминание о дедлайнах*\n\n"
         
         for deadline in deadlines[:3]:  # Limit to 3 most important
+            # Ensure deadline_date has timezone information
+            if deadline['deadline_date'].tzinfo is None:
+                deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
+                
             time_delta = deadline['deadline_date'] - datetime.now(self.tz)
             weight_emoji = get_weight_emoji(deadline['weight'])
             
