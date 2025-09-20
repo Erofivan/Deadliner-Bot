@@ -436,7 +436,7 @@ class DeadlinerBot:
         
         raise ValueError("Неверный формат даты")
     
-    async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = 'importance'):
+    async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = 'time_asc'):
         """List user's deadlines with new interface."""
         user_id = update.effective_user.id
         deadlines = self.db.get_user_deadlines(user_id)
@@ -454,13 +454,23 @@ class DeadlinerBot:
             ]
         else:
             # Sort deadlines based on selected criteria
-            if sort_by == 'importance':
-                deadlines = sort_deadlines_by_importance(deadlines)
-            elif sort_by == 'date':
-                deadlines = sorted(deadlines, key=lambda d: d['deadline_date'])
-            elif sort_by == 'time_remaining':
+            if sort_by == 'time_asc':
+                # Most urgent first (ascending by remaining time)
                 deadlines = sorted(deadlines, key=lambda d: abs((d['deadline_date'] - datetime.now(self.tz)).total_seconds()))
-            elif sort_by == 'weight':
+            elif sort_by == 'time_desc':
+                # Least urgent first (descending by remaining time)
+                deadlines = sorted(deadlines, key=lambda d: abs((d['deadline_date'] - datetime.now(self.tz)).total_seconds()), reverse=True)
+            elif sort_by == 'importance_asc':
+                # Least important first
+                deadlines = sorted(deadlines, key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']))
+            elif sort_by == 'importance_desc':
+                # Most important first (default from importance calculator)
+                deadlines = sort_deadlines_by_importance(deadlines)
+            elif sort_by == 'weight_asc':
+                # Lowest weight first
+                deadlines = sorted(deadlines, key=lambda d: d['weight'])
+            elif sort_by == 'weight_desc':
+                # Highest weight first
                 deadlines = sorted(deadlines, key=lambda d: d['weight'], reverse=True)
             
             text = "📋 *Ваши дедлайны:*\n\n"
@@ -486,21 +496,21 @@ class DeadlinerBot:
                     text += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
                 text += "\n"
             
-            # Create buttons for sorting and editing
-            sort_buttons = [
-                InlineKeyboardButton("📊 По важности" + (" ✓" if sort_by == 'importance' else ""), 
-                                   callback_data="sort_importance"),
-                InlineKeyboardButton("📅 По дате" + (" ✓" if sort_by == 'date' else ""), 
-                                   callback_data="sort_date")
-            ]
+            # Create 3 sorting buttons with reverse functionality
+            time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
+            importance_arrow = "⬆️" if sort_by == 'importance_asc' else "⬇️" if sort_by == 'importance_desc' else ""  
+            weight_arrow = "⬆️" if sort_by == 'weight_asc' else "⬇️" if sort_by == 'weight_desc' else ""
+            
+            # Toggle sort direction on repeated click
+            time_callback = "sort_time_desc" if sort_by == 'time_asc' else "sort_time_asc"
+            importance_callback = "sort_importance_desc" if sort_by == 'importance_asc' else "sort_importance_asc" 
+            weight_callback = "sort_weight_desc" if sort_by == 'weight_asc' else "sort_weight_asc"
             
             keyboard = [
-                sort_buttons,
                 [
-                    InlineKeyboardButton("⏰ По времени" + (" ✓" if sort_by == 'time_remaining' else ""), 
-                                       callback_data="sort_time_remaining"),
-                    InlineKeyboardButton("🏷 По весу" + (" ✓" if sort_by == 'weight' else ""), 
-                                       callback_data="sort_weight")
+                    InlineKeyboardButton(f"⏰ По времени {time_arrow}", callback_data=time_callback),
+                    InlineKeyboardButton(f"🎯 По важности {importance_arrow}", callback_data=importance_callback),
+                    InlineKeyboardButton(f"🏷 По весу {weight_arrow}", callback_data=weight_callback)
                 ],
                 [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
                 [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
