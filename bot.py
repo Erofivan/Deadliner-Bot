@@ -517,57 +517,37 @@ class DeadlinerBot:
             # Save the new sort preference
             self.db.update_user_sort_preference(user_id, sort_by)
 
-        for dl in deadlines:
-            if dl['deadline_date'].tzinfo is None:
-                dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+        # Use unified method to generate deadline list
+        deadline_text = self.generate_deadline_list_text(user_id, include_header=False)
         
-        if not deadlines:
-            text = "📋 У вас пока нет активных дедлайнов.\n\nИспользуйте кнопку ниже для создания нового."
+        if deadline_text == "Дедлайнов нет":
+            text = f"📋 {deadline_text}\n\nИспользуйте кнопку ниже для создания нового."
             keyboard = [
                 [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
                 [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
                 [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
             ]
         else:
-            # Separate overdue and regular deadlines
-            now = datetime.now(self.tz)
-            overdue_deadlines = [dl for dl in deadlines if dl['deadline_date'] < now]
-            regular_deadlines = [dl for dl in deadlines if dl['deadline_date'] >= now]
+            text = f"📋 *Ваши дедлайны:*\n\n{deadline_text}"
             
-            # Sort each group based on selected criteria
-            def sort_deadlines_group(group, sort_by):
-                if sort_by == 'time_asc':
-                    return sorted(group, key=lambda d: abs((d['deadline_date'] - now).total_seconds()))
-                elif sort_by == 'time_desc':
-                    return sorted(group, key=lambda d: abs((d['deadline_date'] - now).total_seconds()), reverse=True)
-                elif sort_by == 'importance_asc':
-                    return sorted(group, key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']))
-                elif sort_by == 'importance_desc':
-                    return sort_deadlines_by_importance(group)
-                return group
+            # Create sorting buttons (same logic as before)
+            time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
+            importance_arrow = "⬆️" if sort_by == 'importance_asc' else "⬇️" if sort_by == 'importance_desc' else ""  
             
-            overdue_deadlines = sort_deadlines_group(overdue_deadlines, sort_by)
-            regular_deadlines = sort_deadlines_group(regular_deadlines, sort_by)
+            # Toggle sort direction on repeated click
+            time_callback = "sort_time_desc" if sort_by == 'time_asc' else "sort_time_asc"
+            importance_callback = "sort_importance_desc" if sort_by == 'importance_asc' else "sort_importance_asc" 
             
-            text = "📋 *Ваши дедлайны:*\n\n"
-            
-            # Show overdue deadlines first
-            if overdue_deadlines:
-                counter = 1
-                for dl in overdue_deadlines:
-                    text += self.format_deadline_for_display(dl, display_settings, counter)
-                    counter += 1
-                
-                # Add separator if there are also regular deadlines
-                if regular_deadlines:
-                    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
-                    
-            # Show regular deadlines
-            if regular_deadlines:
-                counter = len(overdue_deadlines) + 1
-                for dl in regular_deadlines:
-                    text += self.format_deadline_for_display(dl, display_settings, counter)
-                    counter += 1
+            keyboard = [
+                [
+                    InlineKeyboardButton(f"⏰ По времени {time_arrow}", callback_data=time_callback),
+                    InlineKeyboardButton(f"🎯 По важности {importance_arrow}", callback_data=importance_callback)
+                ],
+                [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
+                [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
+                [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+            ]
             
             # Create 2 sorting buttons with reverse functionality
             time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
@@ -1119,7 +1099,7 @@ class DeadlinerBot:
                     text += "Попробуйте позже или обратитесь к администратору."
             else:
                 text = "🧪 *Тест уведомлений*\n\n"
-                text += "❌ У вас нет активных дедлайнов для тестирования.\n\n"
+                text += "❌ Дедлайнов нет.\n\n"
                 text += f"🕐 Текущее время: {datetime.now(self.tz).strftime('%H:%M')} (МСК)\n"
                 text += f"📅 День недели: {datetime.now(self.tz).weekday()}\n\n"
                 text += "Создайте дедлайн и попробуйте тест снова."
@@ -1208,6 +1188,68 @@ class DeadlinerBot:
         
         result += "\n"
         return result
+
+    def generate_deadline_list_text(self, user_id: int, include_header: bool = True) -> str:
+        """Generate unified deadline list text using the same format as 'My deadlines'.
+        This method ensures consistent formatting across My deadlines, Export deadlines, and Notifications.
+        """
+        deadlines = self.db.get_user_deadlines(user_id)
+        display_settings = self.db.get_user_display_settings(user_id)
+        
+        # Fix timezone for all deadlines
+        for dl in deadlines:
+            if dl['deadline_date'].tzinfo is None:
+                dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+        
+        if not deadlines:
+            return "Дедлайнов нет"
+        
+        # Sort by user's preference (same logic as in list_deadlines)
+        sort_by = display_settings.get('sort_preference', 'importance_desc')
+        
+        # Separate overdue and regular deadlines  
+        now = datetime.now(self.tz)
+        overdue_deadlines = [dl for dl in deadlines if dl['deadline_date'] < now]
+        regular_deadlines = [dl for dl in deadlines if dl['deadline_date'] >= now]
+        
+        # Sort each group based on selected criteria
+        def sort_deadlines_group(group, sort_by):
+            if sort_by == 'time_asc':
+                return sorted(group, key=lambda d: abs((d['deadline_date'] - now).total_seconds()))
+            elif sort_by == 'time_desc':
+                return sorted(group, key=lambda d: abs((d['deadline_date'] - now).total_seconds()), reverse=True)
+            elif sort_by == 'importance_asc':
+                return sorted(group, key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']))
+            elif sort_by == 'importance_desc':
+                return sort_deadlines_by_importance(group)
+            return group
+        
+        overdue_deadlines = sort_deadlines_group(overdue_deadlines, sort_by)
+        regular_deadlines = sort_deadlines_group(regular_deadlines, sort_by)
+        
+        text = ""
+        if include_header:
+            text = "Ваши дедлайны:\n\n"
+        
+        # Show overdue deadlines first
+        if overdue_deadlines:
+            counter = 1
+            for dl in overdue_deadlines:
+                text += self.format_deadline_for_display(dl, display_settings, counter)
+                counter += 1
+            
+            # Add separator if there are also regular deadlines
+            if regular_deadlines:
+                text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+                
+        # Show regular deadlines
+        if regular_deadlines:
+            counter = len(overdue_deadlines) + 1
+            for dl in regular_deadlines:
+                text += self.format_deadline_for_display(dl, display_settings, counter)
+                counter += 1
+        
+        return text
 
     async def display_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show display configuration settings with example."""
@@ -1922,37 +1964,21 @@ class DeadlinerBot:
     async def export_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Export deadlines in shareable format."""
         user_id = update.effective_user.id
-        deadlines = self.db.get_user_deadlines(user_id)
         
-        if not deadlines:
-            text = "📤 У вас нет дедлайнов для экспорта."
+        # Use unified method to get deadline content  
+        deadline_content = self.generate_deadline_list_text(user_id, include_header=False)
+        
+        if deadline_content == "Дедлайнов нет":
+            text = f"📤 {deadline_content}"
         else:
-            # Get user display settings
-            display_settings = self.db.get_user_display_settings(user_id)
-            
-            # Sort by user's preference
-            sort_by = display_settings.get('sort_preference', 'importance_desc')
-            if sort_by == 'importance_desc':
-                deadlines = sort_deadlines_by_importance(deadlines)
-            else:
-                # Apply other sorting if needed
-                deadlines = sort_deadlines_by_importance(deadlines)
-            
             text = "📤 *Экспорт дедлайнов:*\n\n"
             text += "```\n"
             text += "🗓 СПИСОК ДЕДЛАЙНОВ\n"
             text += "=" * 25 + "\n\n"
             
-            for i, dl in enumerate(deadlines, 1):
-                # Fix timezone if needed
-                if dl['deadline_date'].tzinfo is None:
-                    dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
-                
-                # Use the same formatting as regular display but adjust for export
-                formatted_line = self.format_deadline_for_display(dl, display_settings, i)
-                # Remove markdown formatting for clean export
-                clean_line = formatted_line.replace('*', '').replace('**', '')
-                text += clean_line + "\n"
+            # Clean the deadline content for export (remove markdown)
+            clean_content = deadline_content.replace('*', '').replace('**', '')
+            text += clean_content
             
             text += "=" * 25 + "\n"
             text += f"Сгенерировано ботом @DeadlinerBot\n"
