@@ -660,7 +660,7 @@ class DeadlinerBot:
         keyboard = [
             [
                 InlineKeyboardButton("✅ Завершить", callback_data=f"complete_{deadline_id}"),
-                InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{deadline_id}")
+                InlineKeyboardButton("✏️ Изменить", callback_data=f"edit_{deadline_id}")
             ],
             [InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{deadline_id}")],
             [InlineKeyboardButton("🔙 Назад", callback_data="edit_deadlines")]
