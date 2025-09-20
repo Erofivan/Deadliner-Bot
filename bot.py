@@ -247,6 +247,22 @@ class DeadlinerBot:
         elif query.data.startswith("complete_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.complete_deadline(update, context, deadline_id)
+        
+        # Individual edit action handlers
+        elif query.data.startswith("edit_title_"):
+            deadline_id = int(query.data.split("_")[2])
+            return await self.start_edit_title(update, context, deadline_id)
+        elif query.data.startswith("edit_desc_"):
+            deadline_id = int(query.data.split("_")[2])
+            return await self.start_edit_description(update, context, deadline_id)
+        elif query.data.startswith("edit_date_"):
+            deadline_id = int(query.data.split("_")[2])
+            return await self.start_edit_date(update, context, deadline_id)
+        elif query.data.startswith("edit_weight_"):
+            deadline_id = int(query.data.split("_")[2])
+            return await self.start_edit_weight_only(update, context, deadline_id)
+    
+
         elif query.data.startswith("edit_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.show_edit_options(update, context, deadline_id)
@@ -279,20 +295,7 @@ class DeadlinerBot:
             day = int(query.data.split("_")[2])
             return await self.toggle_notification_day(update, context, day)
         
-        # Individual edit action handlers
-        elif query.data.startswith("edit_title_"):
-            deadline_id = int(query.data.split("_")[2])
-            return await self.start_edit_title(update, context, deadline_id)
-        elif query.data.startswith("edit_desc_"):
-            deadline_id = int(query.data.split("_")[2])
-            return await self.start_edit_description(update, context, deadline_id)
-        elif query.data.startswith("edit_date_"):
-            deadline_id = int(query.data.split("_")[2])
-            return await self.start_edit_date(update, context, deadline_id)
-        elif query.data.startswith("edit_weight_"):
-            deadline_id = int(query.data.split("_")[2])
-            return await self.start_edit_weight_only(update, context, deadline_id)
-    
+        
     async def start_add_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start conversation for adding deadline."""
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
