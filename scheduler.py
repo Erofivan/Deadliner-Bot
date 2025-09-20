@@ -68,38 +68,14 @@ class ReminderScheduler:
     async def send_user_notifications(self, user_id: int):
         """Send notifications to a specific user."""
         try:
-            # Get active deadlines for this user
-            deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+            # Use the bot's unified method to get the exact same content as "My deadlines"
+            deadline_content = self.bot.generate_deadline_list_text(user_id, include_header=False)
             
-            if not deadlines:
+            if deadline_content == "Дедлайнов нет":
                 return  # No deadlines to notify about
             
-            # Calculate importance scores and filter for notification
-            high_importance_deadlines = []
-            urgent_deadlines = []
-            
-            for deadline in deadlines:
-                # Ensure deadline_date has timezone information
-                if deadline['deadline_date'].tzinfo is None:
-                    deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
-                    
-                importance_score = calculate_importance_score(deadline['weight'], deadline['deadline_date'])
-                
-                # Send notifications for high importance items (score > 5)
-                # or items that are due soon (within 24 hours)
-                time_until = deadline['deadline_date'] - datetime.now(self.tz)
-                hours_until = time_until.total_seconds() / 3600
-                
-                if importance_score > 10 or hours_until < 1:
-                    urgent_deadlines.append(deadline)
-                elif importance_score > 5 or hours_until < 24:
-                    high_importance_deadlines.append(deadline)
-            
-            # Send notifications if there are relevant deadlines
-            if urgent_deadlines:
-                await self._send_urgent_notification(user_id, urgent_deadlines)
-            elif high_importance_deadlines:
-                await self._send_regular_notification(user_id, high_importance_deadlines)
+            # Send notification with exact same format as "My deadlines"
+            await self._send_notification(user_id, deadline_content)
             
         except Exception as e:
             logger.error(f"Error sending notifications to user {user_id}: {e}")
@@ -107,32 +83,14 @@ class ReminderScheduler:
     async def send_test_notification(self, user_id: int):
         """Send a test notification to verify the system is working."""
         try:
-            # Get active deadlines for this user
-            deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
+            # Use the bot's unified method to get the exact same content as "My deadlines"
+            deadline_content = self.bot.generate_deadline_list_text(user_id, include_header=False)
             
-            if not deadlines:
+            if deadline_content == "Дедлайнов нет":
                 return False  # No deadlines to notify about
             
-            # For testing, we'll send notification about the most important deadline
-            # or the one that's due soonest, regardless of normal filtering criteria
-            test_deadlines = []
-            
-            for deadline in deadlines:
-                # Ensure deadline_date has timezone information
-                if deadline['deadline_date'].tzinfo is None:
-                    deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
-                test_deadlines.append(deadline)
-            
-            # Sort by importance score to get the most relevant for testing
-            from importance_calculator import calculate_importance_score
-            test_deadlines.sort(
-                key=lambda d: calculate_importance_score(d['weight'], d['deadline_date']), 
-                reverse=True
-            )
-            
-            # Take the top deadline for test notification
-            top_deadline = test_deadlines[0]
-            await self._send_test_notification_message(user_id, top_deadline)
+            # Send test notification with exact same content as regular notifications
+            await self._send_test_notification_message(user_id, deadline_content)
             
             return True
             
@@ -140,20 +98,11 @@ class ReminderScheduler:
             logger.error(f"Error sending test notification to user {user_id}: {e}")
             return False
     
-    async def _send_test_notification_message(self, user_id: int, deadline: dict):
+    async def _send_test_notification_message(self, user_id: int, deadline_content: str):
         """Send the actual test notification message."""
         text = "🧪 *ТЕСТОВОЕ УВЕДОМЛЕНИЕ*\n\n"
         text += "✅ Система уведомлений работает правильно!\n\n"
-        
-        # Get user display settings to use standardized formatting
-        display_settings = self.db.get_user_display_settings(user_id)
-        
-        # Format the deadline using the same method as regular notifications
-        formatted_deadline = self.bot.format_deadline_for_display(deadline, display_settings, 1)
-        text += "📝 *Пример уведомления с вашим дедлайном:*\n"
-        text += formatted_deadline
-        
-        text += "\n💡 *Примечание:* Это тестовое уведомление. Обычные уведомления приходят согласно вашим настройкам времени и важности дедлайнов."
+        text += deadline_content
         
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -169,46 +118,10 @@ class ReminderScheduler:
         except Exception as e:
             logger.error(f"Failed to send test notification to {user_id}: {e}")
     
-    async def _send_urgent_notification(self, user_id: int, deadlines: list):
-        """Send urgent notification message."""
-        text = "🚨 *СРОЧНЫЕ НАПОМИНАНИЯ*\n\n"
-        
-        # Get user display settings to use standardized formatting
-        display_settings = self.db.get_user_display_settings(user_id)
-        
-        for i, deadline in enumerate(deadlines[:5], 1):  # Limit to 5 most urgent
-            # Use the same formatting as "My deadlines"
-            formatted_deadline = self.bot.format_deadline_for_display(deadline, display_settings, i)
-            text += formatted_deadline
-        
-        try:
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await self.bot.send_message(
-                chat_id=user_id,
-                text=text,
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"Failed to send urgent notification to {user_id}: {e}")
-    
-    async def _send_regular_notification(self, user_id: int, deadlines: list):
-        """Send regular notification message."""
+    async def _send_notification(self, user_id: int, deadline_content: str):
+        """Send notification message using the unified format."""
         text = "⏰ *Напоминание о дедлайнах*\n\n"
-        
-        # Get user display settings to use standardized formatting
-        display_settings = self.db.get_user_display_settings(user_id)
-        
-        for i, deadline in enumerate(deadlines[:3], 1):  # Limit to 3 most important
-            # Use the same formatting as "My deadlines"
-            formatted_deadline = self.bot.format_deadline_for_display(deadline, display_settings, i)
-            text += formatted_deadline
-        
-        if len(deadlines) > 3:
-            text += f"И еще {len(deadlines) - 3} дедлайнов..."
+        text += deadline_content
         
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -222,7 +135,7 @@ class ReminderScheduler:
                 reply_markup=reply_markup
             )
         except Exception as e:
-            logger.error(f"Failed to send regular notification to {user_id}: {e}")
+            logger.error(f"Failed to send notification to {user_id}: {e}")
     
     async def _send_group_reminders(self, deadline: dict, time_until: timedelta):
         """Send urgent reminders to all groups."""
