@@ -110,6 +110,23 @@ class DeadlinerBot:
         self.db = Database()
         self.scheduler = ReminderScheduler(self.db)
         self.tz = ZoneInfo("Europe/Moscow")
+        self.application = None
+    
+    def set_application(self, application):
+        """Set the Telegram application instance for sending messages."""
+        self.application = application
+    
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
+        """Send message using the Telegram bot."""
+        if not self.application:
+            raise RuntimeError("Application not set. Call set_application() first.")
+        
+        return await self.application.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
+        )
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command handler."""
@@ -2246,6 +2263,9 @@ def main():
     
     # Build application
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Set the application instance on the bot for sending messages
+    bot.set_application(application)
     
     # Add conversation handler for adding deadlines
     # Add conversation handler for adding deadlines
