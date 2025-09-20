@@ -62,6 +62,16 @@ class Database:
                 )
             ''')
             
+            # Access codes table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS access_codes (
+                    code TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP
+                )
+            ''')
+            
             conn.commit()
     
     def add_user(self, user_id: int, username: str = None, first_name: str = None):
@@ -321,3 +331,41 @@ class Database:
                 WHERE completed = 0
             ''')
             return [row[0] for row in cursor.fetchall()]
+    
+    def store_access_code(self, code: str, data: str) -> bool:
+        """Store access code with deadline data."""
+        from datetime import datetime, timedelta
+        
+        # Set expiration to 7 days from now
+        expires_at = datetime.now() + timedelta(days=7)
+        
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO access_codes (code, data, expires_at)
+                VALUES (?, ?, ?)
+            ''', (code, data, expires_at))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def get_access_code_data(self, code: str) -> Optional[str]:
+        """Get access code data if it exists and is not expired."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT data FROM access_codes 
+                WHERE code = ? AND (expires_at IS NULL OR expires_at > datetime('now'))
+            ''', (code,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    
+    def cleanup_expired_access_codes(self) -> int:
+        """Remove expired access codes."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM access_codes 
+                WHERE expires_at IS NOT NULL AND expires_at < datetime('now')
+            ''')
+            conn.commit()
+            return cursor.rowcount

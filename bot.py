@@ -1,6 +1,9 @@
 """Main Deadliner Telegram Bot implementation."""
 import logging
 import re
+import json
+import base64
+import hashlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any
@@ -29,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Conversation states
 (ADD_DEADLINE, ADD_TITLE, ADD_DESCRIPTION, ADD_DATE, ADD_WEIGHT, 
  EDIT_DEADLINE, NOTIFICATION_SETTINGS, SET_NOTIFICATION_TIME, 
- VIEW_COMPLETED, DEADLINE_DETAIL) = range(10)
+ VIEW_COMPLETED, DEADLINE_DETAIL, ENTER_ACCESS_CODE) = range(11)
 
 
 def format_time_delta(delta: timedelta) -> str:
@@ -99,15 +102,17 @@ class DeadlinerBot:
     async def advanced_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show advanced options menu."""
         keyboard = [
-            [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
+            [InlineKeyboardButton("🔐 Сгенерировать код доступа", callback_data="generate_access_code")],
             [InlineKeyboardButton("🔑 Ввести код доступа", callback_data="enter_code")],
+            [InlineKeyboardButton("📤 Экспорт дедлайнов", callback_data="export_deadlines")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         text = "⚙️ *Дополнительные функции:*\n\n"
-        text += "📤 Экспорт дедлайнов - получить форматированный список для пересылки\n"
-        text += "🔑 Ввести код доступа - получить права редактирования дедлайнов"
+        text += "🔐 Сгенерировать код доступа - создать код на основе ваших дедлайнов для передачи другим\n"
+        text += "🔑 Ввести код доступа - получить дедлайны по коду от другого пользователя\n"
+        text += "📤 Экспорт дедлайнов - получить форматированный список для пересылки"
         
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -169,8 +174,10 @@ class DeadlinerBot:
             return await self.advanced_menu(update, context)
         elif query.data == "export_deadlines":
             return await self.export_deadlines(update, context)
+        elif query.data == "generate_access_code":
+            return await self.generate_access_code(update, context)
         elif query.data == "enter_code":
-            return await self.prompt_secret_code(update, context)
+            return await self.prompt_access_code(update, context)
         elif query.data == "completed_deadlines":
             return await self.completed_deadlines(update, context)
         elif query.data == "notification_settings":
@@ -1031,6 +1038,180 @@ class DeadlinerBot:
         else:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     
+    async def generate_access_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate access code based on user's deadlines."""
+        user_id = update.effective_user.id
+        deadlines = self.db.get_user_deadlines(user_id)
+        
+        if not deadlines:
+            text = "❌ У вас нет дедлайнов для создания кода доступа."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(text, reply_markup=reply_markup)
+            return
+        
+        # Prepare deadline data for encoding
+        deadline_data = []
+        for dl in deadlines:
+            if dl['completed']:
+                continue  # Skip completed deadlines
+            
+            deadline_info = {
+                'title': dl['title'],
+                'description': dl['description'] or '',
+                'deadline_date': dl['deadline_date'].isoformat() if hasattr(dl['deadline_date'], 'isoformat') else str(dl['deadline_date']),
+                'weight': dl['weight']
+            }
+            deadline_data.append(deadline_info)
+        
+        if not deadline_data:
+            text = "❌ У вас нет активных дедлайнов для создания кода доступа."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(text, reply_markup=reply_markup)
+            return
+        
+        # Create the access code
+        try:
+            # Convert to JSON and encode
+            json_data = json.dumps(deadline_data, ensure_ascii=False)
+            encoded_data = base64.b64encode(json_data.encode('utf-8')).decode('ascii')
+            
+            # Create a readable access code (first 12 chars of hash + length info)
+            data_hash = hashlib.md5(json_data.encode('utf-8')).hexdigest()[:12].upper()
+            code_length = len(encoded_data)
+            access_code = f"DL{data_hash}{code_length:04d}"
+            
+            # Store the full data for later retrieval
+            self.db.store_access_code(access_code, encoded_data)
+            
+            text = f"🔐 *Код доступа создан!*\n\n"
+            text += f"**Ваш код:** `{access_code}`\n\n"
+            text += f"📊 Экспортировано дедлайнов: {len(deadline_data)}\n"
+            text += f"🕐 Код создан: {datetime.now(self.tz).strftime('%d.%m.%Y %H:%M')}\n\n"
+            text += "🔄 *Как использовать:*\n"
+            text += "1. Скопируйте код выше\n"
+            text += "2. Передайте его другому пользователю\n"
+            text += "3. Он сможет импортировать ваши дедлайны через \"Ввести код доступа\"\n\n"
+            text += "⚠️ *Внимание:* Код содержит все ваши активные дедлайны!"
+            
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+        except Exception as e:
+            logger.error(f"Error generating access code: {e}")
+            text = "❌ Не удалось создать код доступа. Попробуйте позже."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def prompt_access_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Prompt user to enter access code for importing deadlines."""
+        text = "🔑 *Импорт дедлайнов по коду*\n\n"
+        text += "Введите код доступа, полученный от другого пользователя.\n\n"
+        text += "**Формат кода:** DL + 12 символов + 4 цифры\n"
+        text += "**Пример:** `DLA1B2C3D4E5F012`\n\n"
+        text += "⚠️ *Внимание:* Дедлайны будут добавлены к вашим существующим, а не заменят их."
+        
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
+        return ENTER_ACCESS_CODE
+
+    async def import_deadlines_from_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Import deadlines from access code."""
+        access_code = update.message.text.strip().upper()
+        user_id = update.effective_user.id
+        
+        # Validate code format
+        if not access_code.startswith('DL') or len(access_code) != 18:
+            await update.message.reply_text(
+                "❌ Неверный формат кода. Код должен начинаться с 'DL' и содержать 16 символов после него.\n\n"
+                "**Пример:** `DLA1B2C3D4E5F012`"
+            )
+            return ENTER_ACCESS_CODE
+        
+        try:
+            # Get stored data
+            encoded_data = self.db.get_access_code_data(access_code)
+            
+            if not encoded_data:
+                await update.message.reply_text(
+                    "❌ Код доступа не найден или уже недействителен.\n\n"
+                    "Убедитесь, что код введен правильно и попробуйте еще раз."
+                )
+                return ENTER_ACCESS_CODE
+            
+            # Decode the data
+            json_data = base64.b64decode(encoded_data.encode('ascii')).decode('utf-8')
+            deadline_data = json.loads(json_data)
+            
+            # Import deadlines
+            imported_count = 0
+            for dl_info in deadline_data:
+                try:
+                    # Parse deadline date
+                    deadline_date = datetime.fromisoformat(dl_info['deadline_date'])
+                    if deadline_date.tzinfo is None:
+                        deadline_date = deadline_date.replace(tzinfo=self.tz)
+                    
+                    # Add deadline to user's account
+                    self.db.add_deadline(
+                        user_id=user_id,
+                        title=dl_info['title'],
+                        description=dl_info['description'],
+                        deadline_date=deadline_date,
+                        weight=dl_info['weight']
+                    )
+                    imported_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error importing deadline: {e}")
+                    continue
+            
+            if imported_count > 0:
+                text = f"✅ *Импорт успешно завершен!*\n\n"
+                text += f"📊 Импортировано дедлайнов: {imported_count}\n"
+                text += f"🕐 Время импорта: {datetime.now(self.tz).strftime('%d.%m.%Y %H:%M')}\n\n"
+                text += "🔍 Посмотреть новые дедлайны можно в разделе \"Мои дедлайны\"."
+                
+                keyboard = [
+                    [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")],
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+                ]
+            else:
+                text = "❌ Не удалось импортировать дедлайны. Возможно, они повреждены."
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            
+            return ConversationHandler.END
+            
+        except Exception as e:
+            logger.error(f"Error importing deadlines from code: {e}")
+            await update.message.reply_text(
+                "❌ Не удалось обработать код доступа. Убедитесь, что код введен правильно."
+            )
+            return ENTER_ACCESS_CODE
+
     async def prompt_secret_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Prompt user to enter secret code."""
         text = "🔑 Введите секретный код для получения доступа к редактированию дедлайнов:"
@@ -1197,6 +1378,20 @@ def main():
         fallbacks=[CommandHandler('cancel', bot.cancel)]
     )
     
+    # Add conversation handler for access code import
+    access_code_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(bot.prompt_access_code, pattern="^enter_code$")
+        ],
+        states={
+            ENTER_ACCESS_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.import_deadlines_from_code),
+                CallbackQueryHandler(bot.advanced_menu, pattern="^advanced_menu$")
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(bot.advanced_menu, pattern="^advanced_menu$")]
+    )
+    
     # Add handlers
     application.add_handler(CommandHandler('start', bot.start))
     application.add_handler(CommandHandler('help', bot.help_command))
@@ -1206,6 +1401,7 @@ def main():
     application.add_handler(add_deadline_conv)
     application.add_handler(notification_time_conv)
     application.add_handler(edit_deadline_conv)
+    application.add_handler(access_code_conv)
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     application.add_handler(MessageHandler(filters.TEXT, bot.check_secret_code), group=1)
     application.add_handler(MessageHandler(filters.ALL, bot.handle_group_message), group=2)
