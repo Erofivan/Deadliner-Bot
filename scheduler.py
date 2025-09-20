@@ -108,25 +108,13 @@ class ReminderScheduler:
         """Send urgent notification message."""
         text = "🚨 *СРОЧНЫЕ НАПОМИНАНИЯ*\n\n"
         
-        for deadline in deadlines[:5]:  # Limit to 5 most urgent
-            # Ensure deadline_date has timezone information
-            if deadline['deadline_date'].tzinfo is None:
-                deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
-                
-            time_delta = deadline['deadline_date'] - datetime.now(self.tz)
-            weight_emoji = get_weight_emoji(deadline['weight'])
-            
-            if time_delta.total_seconds() < 0:
-                time_text = f"*просрочено на {abs(time_delta.days)} дн.*"
-            elif time_delta.days > 0:
-                time_text = f"{time_delta.days} дн."
-            else:
-                hours = int(time_delta.total_seconds() // 3600)
-                time_text = f"{hours} ч." if hours > 0 else "менее часа"
-            
-            text += f"{weight_emoji} *{deadline['title']}*\n"
-            text += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
-            text += f"⏰ Осталось: {time_text}\n\n"
+        # Get user display settings to use standardized formatting
+        display_settings = self.db.get_user_display_settings(user_id)
+        
+        for i, deadline in enumerate(deadlines[:5], 1):  # Limit to 5 most urgent
+            # Use the same formatting as "My deadlines"
+            formatted_deadline = self.bot.format_deadline_for_display(deadline, display_settings, i)
+            text += formatted_deadline
         
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -146,23 +134,13 @@ class ReminderScheduler:
         """Send regular notification message."""
         text = "⏰ *Напоминание о дедлайнах*\n\n"
         
-        for deadline in deadlines[:3]:  # Limit to 3 most important
-            # Ensure deadline_date has timezone information
-            if deadline['deadline_date'].tzinfo is None:
-                deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
-                
-            time_delta = deadline['deadline_date'] - datetime.now(self.tz)
-            weight_emoji = get_weight_emoji(deadline['weight'])
-            
-            if time_delta.days > 0:
-                time_text = f"{time_delta.days} дн."
-            else:
-                hours = int(time_delta.total_seconds() // 3600)
-                time_text = f"{hours} ч." if hours > 0 else "сегодня"
-            
-            text += f"{weight_emoji} *{deadline['title']}*\n"
-            text += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
-            text += f"⏰ {time_text}\n\n"
+        # Get user display settings to use standardized formatting
+        display_settings = self.db.get_user_display_settings(user_id)
+        
+        for i, deadline in enumerate(deadlines[:3], 1):  # Limit to 3 most important
+            # Use the same formatting as "My deadlines"
+            formatted_deadline = self.bot.format_deadline_for_display(deadline, display_settings, i)
+            text += formatted_deadline
         
         if len(deadlines) > 3:
             text += f"И еще {len(deadlines) - 3} дедлайнов..."
