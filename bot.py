@@ -1087,11 +1087,7 @@ class DeadlinerBot:
             ],
             [
                 InlineKeyboardButton(
-                    f"📊 Важность {'✅' if settings['show_importance'] else '❌'}",
-                    callback_data="toggle_show_importance"
-                ),
-                InlineKeyboardButton(
-                    f"🏷 Вес {'✅' if settings['show_weight'] else '❌'}",
+                    f"📊 Важность {'✅' if settings['show_weight'] else '❌'}",
                     callback_data="toggle_show_weight"
                 )
             ],
