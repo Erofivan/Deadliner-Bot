@@ -184,8 +184,10 @@ class DeadlinerBot:
         # Editing actions
         elif query.data == "edit_deadlines":
             return await self.edit_deadlines(update, context)
-        elif query.data == "edit_completed_deadlines":
-            return await self.edit_completed_deadlines(update, context)
+        elif query.data == "restore_completed_deadlines":
+            return await self.restore_completed_deadlines(update, context)
+        elif query.data == "delete_completed_deadlines":
+            return await self.delete_completed_deadlines(update, context)
         elif query.data.startswith("detail_"):
             deadline_id = int(query.data.split("_")[1])
             context.user_data['last_view'] = 'detail'
@@ -195,6 +197,9 @@ class DeadlinerBot:
         elif query.data.startswith("complete_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.complete_deadline(update, context, deadline_id)
+        elif query.data.startswith("delete_completed_"):
+            deadline_id = int(query.data.split("_")[2])
+            return await self.delete_completed_deadline(update, context, deadline_id)
         elif query.data.startswith("delete_"):
             deadline_id = int(query.data.split("_")[1])
             return await self.delete_deadline(update, context, deadline_id)
@@ -612,7 +617,8 @@ class DeadlinerBot:
                 text += "\n"
         
         keyboard = [
-            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_completed_deadlines")],
+            [InlineKeyboardButton("🔄 Восстановить", callback_data="restore_completed_deadlines")],
+            [InlineKeyboardButton("🗑️ Удалить", callback_data="delete_completed_deadlines")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
         
@@ -623,8 +629,8 @@ class DeadlinerBot:
         else:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
     
-    async def edit_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show completed deadlines for editing (reopening)."""
+    async def restore_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show completed deadlines for restoring."""
         user_id = update.effective_user.id
         completed = self.db.get_completed_deadlines(user_id)
         
@@ -632,7 +638,7 @@ class DeadlinerBot:
             text = "✅ У вас пока нет завершенных дедлайнов."
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="completed_deadlines")]]
         else:
-            text = "✏️ *Выберите дедлайн для восстановления:*\n\n"
+            text = "🔄 *Выберите дедлайн для восстановления:*\n\n"
             
             keyboard = []
             for dl in completed:
@@ -648,6 +654,33 @@ class DeadlinerBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def delete_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show completed deadlines for deletion."""
+        user_id = update.effective_user.id
+        completed = self.db.get_completed_deadlines(user_id)
+        
+        if not completed:
+            text = "✅ У вас пока нет завершенных дедлайнов."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="completed_deadlines")]]
+        else:
+            text = "🗑️ *Выберите дедлайн для удаления:*\n\n"
+            text += "⚠️ *Внимание:* Удаленные дедлайны нельзя будет восстановить!\n\n"
+            
+            keyboard = []
+            for dl in completed:
+                if dl['deadline_date'].tzinfo is None:
+                    dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+                weight_emoji = get_weight_emoji(dl['weight'])
+                button_text = f"{weight_emoji} {dl['title']}"
+                if len(button_text) > 30:
+                    button_text = button_text[:27] + "..."
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"delete_completed_{dl['id']}")])
+            
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="completed_deadlines")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     
     async def reopen_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Reopen a completed deadline."""
@@ -655,9 +688,19 @@ class DeadlinerBot:
         
         if self.db.reopen_deadline(deadline_id, user_id):
             await update.callback_query.answer("🔄 Дедлайн восстановлен!")
-            await self.edit_completed_deadlines(update, context)
+            await self.restore_completed_deadlines(update, context)
         else:
             await update.callback_query.answer("❌ Не удалось восстановить дедлайн")
+
+    async def delete_completed_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
+        """Delete a completed deadline permanently."""
+        user_id = update.effective_user.id
+        
+        if self.db.delete_deadline(deadline_id, user_id):
+            await update.callback_query.answer("🗑️ Дедлайн удален!")
+            await self.delete_completed_deadlines(update, context)
+        else:
+            await update.callback_query.answer("❌ Не удалось удалить дедлайн")
     
     async def notification_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show notification settings."""
