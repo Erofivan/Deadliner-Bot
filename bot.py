@@ -624,7 +624,7 @@ class DeadlinerBot:
         
         # Format time remaining
         if days_left > 1:
-            time_left = f"{days_left} н."
+            time_left = f"{days_left} д."
         elif days_left == 1:
             time_left = "завтра"
         elif days_left == 0 and hours_left > 0:
