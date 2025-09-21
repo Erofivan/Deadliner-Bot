@@ -7,6 +7,7 @@ import hashlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any
+from telegram.helpers import escape_markdown
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -115,6 +116,9 @@ class DeadlinerBot:
     def set_application(self, application):
         """Set the Telegram application instance for sending messages."""
         self.application = application
+
+    def md(self, text: str) -> str:
+        return escape_markdown(text or "", version=1)
 
     async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
         """Send message using the Telegram bot."""
@@ -793,14 +797,14 @@ class DeadlinerBot:
         importance_desc = get_importance_description(deadline['weight'], deadline['deadline_date'])
 
         text = f"📋 *Детали дедлайна:*\n\n"
-        text += f"📝 **{deadline['title']}**\n"
+        text += f"📝 **{self.md(deadline['title'])}**\n"
         text += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
         text += f"⏰ {time_left}\n"
         text += f"📊 {weight_emoji} Важность: {deadline['weight']}/10\n"
         text += f"🎯 {importance_desc}\n"
 
         if deadline['description']:
-            text += f"📄 {deadline['description']}\n"
+            text += f"📄 {self.md(deadline['description'])}\n"
 
         text += f"🆔 ID: {deadline['id']}"
 
@@ -839,11 +843,11 @@ class DeadlinerBot:
         weight_emoji = get_weight_emoji(deadline['weight'])
 
         text = f"✏️ *Редактирование дедлайна*\n\n"
-        text += f"📝 **{deadline['title']}**\n"
+        text += f"📝 **{self.md(deadline['title'])}**\n"
         text += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
         text += f"📊 Важность: {weight_emoji} {deadline['weight']}/10\n"
         if deadline['description']:
-            text += f"📄 {deadline['description']}\n"
+            text += f"📄 {self.md(deadline['description'])}\n"
         text += f"\nВыберите что хотите изменить:"
 
         keyboard = [
@@ -873,7 +877,7 @@ class DeadlinerBot:
         context.user_data['edit_deadline_id'] = deadline_id
         context.user_data['editing_field'] = 'title'
 
-        text = f"✏️ *Редактирование названия*\n\n📝 Текущее название: **{deadline['title']}**\n\nВведите новое название:"
+        text = f"✏️ *Редактирование названия*\n\n📝 Текущее название: **{self.md(deadline['title'])}**\n\nВведите новое название:"
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_{deadline_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -898,7 +902,7 @@ class DeadlinerBot:
         context.user_data['editing_field'] = 'description'
 
         desc_text = deadline['description'] if deadline['description'] else "(пусто)"
-        text = f"✏️ *Редактирование описания*\n\n📄 Текущее описание: **{desc_text}**\n\nВведите новое описание (или /skip чтобы оставить пустым):"
+        text = f"✏️ *Редактирование описания*\n\n📄 Текущее описание: **{self.md(desc_text)}**\n\nВведите новое описание (или /skip чтобы оставить без изменений):"
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_{deadline_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1012,9 +1016,9 @@ class DeadlinerBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         if update.callback_query:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
-            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
     async def restore_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show completed deadlines for restoring."""
@@ -1260,7 +1264,6 @@ class DeadlinerBot:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
     def format_deadline_for_display(self, deadline: Dict, settings: Dict, index: int = None) -> str:
-        """Format a deadline according to user display settings."""
         dl = deadline.copy()
         if dl['deadline_date'].tzinfo is None:
             dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
@@ -1268,44 +1271,37 @@ class DeadlinerBot:
         time_delta = dl['deadline_date'] - datetime.now(self.tz)
         time_left = format_time_delta(time_delta)
 
-        # Start with basic structure
         result = ""
-
-        # Add index if provided
         if index is not None:
             result += f"{index}. "
 
-        # Add emoji if enabled
         if settings['show_emojis']:
             weight_emoji = get_weight_emoji(dl['weight'])
             result += f"{weight_emoji} "
 
-        # Add title (always shown)
+        title_esc = self.md(dl['title'])
         if time_delta <= timedelta(0):
-            result += f"***{dl['title']}***"
+            result += f"***{title_esc}***"
         else:
-            result += dl['title']
+            result += title_esc
 
-        # Add remaining time if enabled
         if settings['show_remaining_time']:
             result += f" {time_left}"
 
         result += "\n"
 
-        # Add date if enabled
         if settings['show_date']:
             result += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
 
-        # Add importance/weight if enabled
         if settings['show_importance'] or settings['show_weight']:
             if settings['show_weight']:
                 result += f"   📊 Важность: {dl['weight']}/10\n"
 
-        # Add description if enabled and exists
         if settings['show_description'] and dl['description']:
-            result += f"   📄 {dl['description'][:50]}{'...' if len(dl['description']) > 50 else ''}\n"
+            desc_full = dl['description']
+            desc_preview = desc_full[:50]
+            result += f"   📄 {self.md(desc_preview)}{'...' if len(desc_full) > 50 else ''}\n"
 
-        # Add time tracking information if enabled
         if settings.get('show_time_tracking', True):
             created_at = dl.get('created_at')
             completed_at = dl.get('completed_at')
@@ -1554,11 +1550,11 @@ class DeadlinerBot:
                 longest = max(completion_times, key=lambda x: x[1].total_seconds())
 
                 text += f"🏃 *Самый быстрый дедлайн:*\n"
-                text += f"   {get_weight_emoji(fastest[0]['weight'])} {fastest[0]['title']}\n"
+                text += f"   {get_weight_emoji(fastest[0]['weight'])} {self.md(fastest[0]['title'])}\n"
                 text += f"   ⏱️ Выполнен за: {format_duration(fastest[1])}\n\n"
 
                 text += f"🐌 *Самый долгий по выполнению:*\n"
-                text += f"   {get_weight_emoji(longest[0]['weight'])} {longest[0]['title']}\n"
+                text += f"   {get_weight_emoji(longest[0]['weight'])} {self.md(longest[0]['title'])}\n"
                 text += f"   ⏱️ Выполнялся: {format_duration(longest[1])}\n\n"
 
             if weights:
@@ -1566,11 +1562,11 @@ class DeadlinerBot:
                 easiest = min(weights, key=lambda x: x[1])
 
                 text += f"🔥 *Самый сложный дедлайн:*\n"
-                text += f"   {get_weight_emoji(hardest[0]['weight'])} {hardest[0]['title']}\n"
+                text += f"   {get_weight_emoji(hardest[0]['weight'])} {self.md(hardest[0]['title'])}\n"
                 text += f"   📊 Важность: {hardest[0]['weight']}/10\n\n"
 
                 text += f"😌 *Самый легкий дедлайн:*\n"
-                text += f"   {get_weight_emoji(easiest[0]['weight'])} {easiest[0]['title']}\n"
+                text += f"   {get_weight_emoji(easiest[0]['weight'])} {self.md(easiest[0]['title'])}\n"
                 text += f"   📊 Важность: {easiest[0]['weight']}/10\n\n"
 
             # Average statistics
@@ -1599,8 +1595,8 @@ class DeadlinerBot:
                 lightest_active = min(active_deadlines, key=lambda x: x['weight'])
 
                 text += f"🎯 *Текущие экстремумы:*\n"
-                text += f"   🔥 Самый важный: {heaviest_active['title']} ({heaviest_active['weight']}/10)\n"
-                text += f"   😌 Самый простой: {lightest_active['title']} ({lightest_active['weight']}/10)\n"
+                text += f"   🔥 Самый важный: {self.md(heaviest_active['title'])} ({heaviest_active['weight']}/10)\n"
+                text += f"   😌 Самый простой: {self.md(lightest_active['title'])} ({lightest_active['weight']}/10)\n"
 
         if total_completed == 0 and total_active == 0:
             text += "🌟 *Пока нет данных для статистики*\n"
@@ -1649,7 +1645,7 @@ class DeadlinerBot:
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"detail_{deadline_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        text = f"✏️ *Редактирование дедлайна*\n\n📝 **{deadline['title']}**\n\nВведите новое название дедлайна:"
+        text = f"✏️ *Редактирование дедлайна*\n\n📝 **{self.md(deadline['title'])}**\n\nВведите новое название дедлайна:"
 
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -1672,7 +1668,7 @@ class DeadlinerBot:
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 await update.message.reply_text(
-                    f"✅ Название изменено на: **{new_title}**",
+                    f"✅ Название изменено на: **{self.md(new_title)}**",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -1718,7 +1714,7 @@ class DeadlinerBot:
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 await update.message.reply_text(
-                    f"✅ Описание изменено на: **{desc_text}**",
+                    f"✅ Описание изменено на: **{self.md(desc_text)}**",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -1873,16 +1869,15 @@ class DeadlinerBot:
                     importance_desc = get_importance_description(weight, deadline_date)
 
                     success_text = (
-                        f"✅ Дедлайн обновлен!\\n\\n"
-                        f"📝 {title}\\n"
-                        f"📅 {deadline_date.strftime('%d.%m.%Y %H:%M')}\\n"
-                        f"📊 {weight_emoji} Важность: {weight}/10\\n"
-                        f"🎯 {importance_desc}\\n"
+                        f"✅ Дедлайн обновлен!\n\n"
+                        f"📝 {self.md(title)}\n"
+                        f"📅 {deadline_date.strftime('%d.%m.%Y %H:%M')}\n"
+                        f"📊 {weight_emoji} Важность: {weight}/10\n"
+                        f"🎯 {importance_desc}\n"
                         f"🆔 ID: {deadline_id}"
                     )
-
                     if description:
-                        success_text += f"\\n📄 {description}"
+                        success_text += f"\n📄 {self.md(description)}"
 
                     keyboard = [
                         [InlineKeyboardButton("📋 К деталям", callback_data=f"detail_{deadline_id}")],
@@ -1929,7 +1924,7 @@ class DeadlinerBot:
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"detail_{deadline_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        text = f"✏️ *Редактирование дедлайна*\\n\\n📝 **{original_title}**\\n\\nВведите новое название дедлайна:"
+        text = f"✏️ *Редактирование дедлайна*\n\n📝 **{self.md(original_title)}**\n\nВведите новое название дедлайна:"
 
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         return EDIT_TITLE
@@ -2011,7 +2006,7 @@ class DeadlinerBot:
         weight_emoji = get_weight_emoji(deadline['weight'])
 
         text = (f"✏️ *Редактирование дедлайна*\n\n"
-                f"📝 **{deadline['title']}**\n"
+                f"📝 **{self.md(deadline['title'])}**\n"
                 f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n"
                 f"📊 Текущая важность: {weight_emoji} {deadline['weight']}/10\n\n"
                 f"Введите новую важность (число от 0 до 10):")
@@ -2403,9 +2398,9 @@ class DeadlinerBot:
 
                         weight_emoji = get_weight_emoji(dl['weight'])
                         
-                        title_format = f"*{dl['title']}*"
+                        title_format = f"*{self.md(dl['title'])}*"
                         if is_overdue:
-                             title_format = f"***{dl['title']}***" # Make overdue bold and italic
+                            title_format = f"***{self.md(dl['title'])}***"
 
                         text += f"{weight_emoji} {title_format} {time_left_str}\n"
                         text += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n\n"
