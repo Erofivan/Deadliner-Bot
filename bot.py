@@ -157,6 +157,7 @@ class DeadlinerBot:
             keyboard = [
                 [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
                 [InlineKeyboardButton("📋 Наши дедлайны", callback_data="list_deadlines")],
+                [InlineKeyboardButton("🔔 Уведомления", callback_data="notification_settings")],
                 [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
