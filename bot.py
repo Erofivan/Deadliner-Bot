@@ -2462,13 +2462,17 @@ def main():
 
     bot = DeadlinerBot()
 
-    # Build application
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Startup hook for scheduler
+    async def on_startup(app):
+        bot.scheduler.start(bot)
+        logger.info("Scheduler started!")
+
+    # Build application with post_init
+    application = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
 
     # Set the application instance on the bot for sending messages
     bot.set_application(application)
 
-    # Add conversation handler for adding deadlines
     # Add conversation handler for adding deadlines
     add_deadline_conv = ConversationHandler(
         entry_points=[
@@ -2564,9 +2568,6 @@ def main():
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     application.add_handler(MessageHandler(filters.TEXT, bot.check_secret_code), group=1)
     application.add_handler(MessageHandler(filters.ALL, bot.handle_group_message), group=2)
-
-    # Start scheduler
-    bot.scheduler.start(bot)
 
     logger.info("Bot started successfully!")
     application.run_polling()
