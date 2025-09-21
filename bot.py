@@ -157,6 +157,7 @@ class DeadlinerBot:
             keyboard = [
                 [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
                 [InlineKeyboardButton("📋 Наши дедлайны", callback_data="list_deadlines")],
+                [InlineKeyboardButton("🔔 Уведомления", callback_data="notification_settings")],
                 [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2352,15 +2353,18 @@ class DeadlinerBot:
             context.user_data['awaiting_code'] = False
 
     async def handle_group_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle messages in groups."""
+        """Handle messages in groups (only when not in conversation)."""
         chat = update.effective_chat
 
         if chat.type in ['group', 'supergroup']:
             # Add group to database
             self.db.add_group(chat.id, chat.title)
 
+            # Don't interfere with ongoing conversations
+            # Conversation handlers should take priority
+            
             # Check if bot was mentioned or command was used
-            if update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
+            if update.message and update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
                 # Get group-specific deadlines
                 context_id = self.get_context_id(update)
                 deadlines = self.db.get_user_deadlines(context_id)
@@ -2536,7 +2540,11 @@ def main():
     application.add_handler(access_code_conv)
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     application.add_handler(MessageHandler(filters.TEXT, bot.check_secret_code), group=1)
-    application.add_handler(MessageHandler(filters.ALL, bot.handle_group_message), group=2)
+    # Only handle group messages that mention deadlines or bot, don't interfere with conversations
+    application.add_handler(MessageHandler(
+        filters.TEXT & (filters.Regex(r'/deadlines') | filters.Regex(r'@')),
+        bot.handle_group_message
+    ), group=2)
 
     # Start scheduler
     bot.scheduler.start(bot)
