@@ -2247,6 +2247,10 @@ class DeadlinerBot:
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="advanced_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        # For groups, set manual conversation state
+        if self.is_group_context(update):
+            context.user_data['conversation_state'] = 'ENTER_ACCESS_CODE'
+
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
@@ -2400,6 +2404,12 @@ class DeadlinerBot:
                         return await self.add_weight(update, context)
                     elif state == 'SET_NOTIFICATION_TIME':
                         return await self.save_notification_times(update, context)
+                    elif state == 'ENTER_ACCESS_CODE':
+                        return await self.import_deadlines_from_code(update, context)
+                        
+                # Handle secret code checking in groups
+                if user_data.get('awaiting_code'):
+                    return await self.check_secret_code(update, context)
 
             # Check if bot was mentioned or command was used
             if update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
