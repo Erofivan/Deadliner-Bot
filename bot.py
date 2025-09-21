@@ -2381,39 +2381,23 @@ class DeadlinerBot:
             context.user_data['awaiting_code'] = False
 
     async def handle_group_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle messages in groups."""
+        """Handle non-conversation messages in groups."""
+        # This function should only handle messages that are not part of an active conversation.
+        # The ConversationHandler will take precedence for messages within its states.
         chat = update.effective_chat
 
         if chat.type in ['group', 'supergroup']:
-            # Add group to database
+            # Add group to the database if it's not already there
             self.db.add_group(chat.id, chat.title)
 
-            # Check if user is in a conversation state and delegate to appropriate handler
-            user_data = context.user_data
-            if user_data:
-                # Handle conversation states in groups
-                if 'conversation_state' in user_data:
-                    state = user_data['conversation_state']
-                    if state == 'ADD_TITLE':
-                        return await self.add_title(update, context)
-                    elif state == 'ADD_DESCRIPTION':
-                        return await self.add_description(update, context)
-                    elif state == 'ADD_DATE':
-                        return await self.add_date(update, context)
-                    elif state == 'ADD_WEIGHT':
-                        return await self.add_weight(update, context)
-                    elif state == 'SET_NOTIFICATION_TIME':
-                        return await self.save_notification_times(update, context)
-                    elif state == 'ENTER_ACCESS_CODE':
-                        return await self.import_deadlines_from_code(update, context)
-                        
-                # Handle secret code checking in groups
-                if user_data.get('awaiting_code'):
-                    return await self.check_secret_code(update, context)
+            # Check for secret code submission, as it's not part of a standard conversation
+            if context.user_data.get('awaiting_code'):
+                return await self.check_secret_code(update, context)
 
-            # Check if bot was mentioned or command was used
-            if update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
-                # Get group-specific deadlines
+            # Optional: handle bot mentions to show a list of deadlines,
+            # but only if there's no active conversation with this user.
+            # ConversationHandler already prevents this, but it's good practice.
+            if update.message and update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
                 context_id = self.get_context_id(update)
                 deadlines = self.db.get_user_deadlines(context_id)
 
@@ -2423,12 +2407,19 @@ class DeadlinerBot:
                     for dl in deadlines[:10]:  # Show max 10 deadlines
                         if dl['deadline_date'].tzinfo is None:
                             dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
-                        days_left = (dl['deadline_date'] - datetime.now(self.tz)).days
-                        time_left = f"({days_left}д.)" if days_left > 0 else "(сегодня)"
                         
+                        time_delta = dl['deadline_date'] - datetime.now(self.tz)
+                        is_overdue = time_delta.total_seconds() < 0
+                        time_left_str = format_time_delta(time_delta)
+
                         weight_emoji = get_weight_emoji(dl['weight'])
-                        text += f"{weight_emoji} *{dl['title']}* {time_left}\n"
-                        text += f"📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n\n"
+                        
+                        title_format = f"*{dl['title']}*"
+                        if is_overdue:
+                             title_format = f"***{dl['title']}***" # Make overdue bold and italic
+
+                        text += f"{weight_emoji} {title_format} {time_left_str}\n"
+                        text += f"   📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n\n"
                     
                     await update.message.reply_text(text, parse_mode='Markdown')
                 else:
