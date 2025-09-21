@@ -51,6 +51,13 @@ class Database:
                 # Column already exists
                 pass
             
+            # Add group_id column to existing table if it doesn't exist
+            try:
+                cursor.execute('ALTER TABLE deadlines ADD COLUMN group_id INTEGER')
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+            
             # Add user_notification_settings table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_notification_settings (
@@ -153,14 +160,14 @@ class Database:
             return bool(result and result[0])
     
     def add_deadline(self, user_id: int, title: str, description: str, 
-                    deadline_date: datetime, weight: int) -> int:
+                    deadline_date: datetime, weight: int, group_id: int = None) -> int:
         """Add a new deadline."""
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO deadlines (user_id, title, description, deadline_date, weight)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, title, description, deadline_date, weight))
+                INSERT INTO deadlines (user_id, title, description, deadline_date, weight, group_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, title, description, deadline_date, weight, group_id))
             conn.commit()
             return cursor.lastrowid
     
@@ -197,15 +204,50 @@ class Database:
             
             return deadlines
     
+    def get_group_deadlines(self, group_id: int, include_completed: bool = False) -> List[Dict]:
+        """Get all deadlines for a group."""
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            cursor = conn.cursor()
+            
+            query = '''
+                SELECT id, user_id, title, description, deadline_date, weight, created_at, completed
+                FROM deadlines
+                WHERE group_id = ?
+            '''
+            
+            if not include_completed:
+                query += ' AND completed = 0'
+            
+            query += ' ORDER BY deadline_date ASC'
+            
+            cursor.execute(query, (group_id,))
+            rows = cursor.fetchall()
+            
+            deadlines = []
+            for row in rows:
+                deadlines.append({
+                    'id': row[0],
+                    'user_id': row[1],
+                    'title': row[2],
+                    'description': row[3],
+                    'deadline_date': datetime.fromisoformat(row[4]),
+                    'weight': row[5],
+                    'created_at': datetime.fromisoformat(row[6]),
+                    'completed': bool(row[7])
+                })
+            
+            return deadlines
+    
     def get_all_active_deadlines(self) -> List[Dict]:
         """Get all active deadlines for reminders."""
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT d.id, d.user_id, d.title, d.description, d.deadline_date, d.weight,
-                       u.username, u.first_name
+                       u.username, u.first_name, d.group_id, g.title as group_title
                 FROM deadlines d
                 JOIN users u ON d.user_id = u.user_id
+                LEFT JOIN groups g ON d.group_id = g.chat_id
                 WHERE d.completed = 0 AND d.deadline_date > datetime('now')
                 ORDER BY d.deadline_date ASC
             ''')
@@ -222,31 +264,54 @@ class Database:
                     'deadline_date': datetime.fromisoformat(row[4]),
                     'weight': row[5],
                     'username': row[6],
-                    'first_name': row[7]
+                    'first_name': row[7],
+                    'group_id': row[8],
+                    'group_title': row[9]
                 })
             
             return deadlines
     
-    def complete_deadline(self, deadline_id: int, user_id: int) -> bool:
+    def complete_deadline(self, deadline_id: int, user_id: int = None, group_id: int = None) -> bool:
         """Mark a deadline as completed."""
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE deadlines 
-                SET completed = 1, completed_at = datetime('now')
-                WHERE id = ? AND user_id = ?
-            ''', (deadline_id, user_id))
+            
+            if group_id is not None:
+                # Group context - any group member can complete
+                cursor.execute('''
+                    UPDATE deadlines 
+                    SET completed = 1, completed_at = datetime('now')
+                    WHERE id = ? AND group_id = ?
+                ''', (deadline_id, group_id))
+            else:
+                # User context - only owner can complete
+                cursor.execute('''
+                    UPDATE deadlines 
+                    SET completed = 1, completed_at = datetime('now')
+                    WHERE id = ? AND user_id = ?
+                ''', (deadline_id, user_id))
+            
             conn.commit()
             return cursor.rowcount > 0
     
-    def delete_deadline(self, deadline_id: int, user_id: int) -> bool:
+    def delete_deadline(self, deadline_id: int, user_id: int = None, group_id: int = None) -> bool:
         """Delete a deadline."""
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                DELETE FROM deadlines 
-                WHERE id = ? AND user_id = ?
-            ''', (deadline_id, user_id))
+            
+            if group_id is not None:
+                # Group context - any group member can delete
+                cursor.execute('''
+                    DELETE FROM deadlines 
+                    WHERE id = ? AND group_id = ?
+                ''', (deadline_id, group_id))
+            else:
+                # User context - only owner can delete
+                cursor.execute('''
+                    DELETE FROM deadlines 
+                    WHERE id = ? AND user_id = ?
+                ''', (deadline_id, user_id))
+            
             conn.commit()
             return cursor.rowcount > 0
     

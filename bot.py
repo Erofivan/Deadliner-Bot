@@ -131,24 +131,46 @@ class DeadlinerBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command handler."""
         user = update.effective_user
+        chat = update.effective_chat
+        
         self.db.add_user(user.id, user.username, user.first_name)
         
-        keyboard = [
-            [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
-            [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")],
-            [InlineKeyboardButton("🔔 Уведомления", callback_data="notification_settings")],
-            [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        welcome_text = f"Привет, {user.first_name}! 👋\n\n"
-        welcome_text += "Я помогу тебе управлять дедлайнами. Вот что я умею:\n\n"
-        welcome_text += "📝 Создавать дедлайны с весом важности\n"
-        welcome_text += "📋 Показывать список активных дедлайнов\n"
-        welcome_text += "⏰ Присылать напоминания\n"
-        welcome_text += "📤 Экспортировать дедлайны для пересылки\n"
-        welcome_text += "🔑 Делиться доступом через секретный код\n\n"
-        welcome_text += "Выбери действие:"
+        # Check if this is a group or private chat
+        if chat.type in ['group', 'supergroup']:
+            # Group context
+            self.db.add_group(chat.id, chat.title)
+            
+            keyboard = [
+                [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
+                [InlineKeyboardButton("📋 Дедлайны группы", callback_data="list_deadlines")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            welcome_text = f"Привет, {chat.title}! 👋\n\n"
+            welcome_text += "Я помогу группе управлять общими дедлайнами. Вот что я умею:\n\n"
+            welcome_text += "📝 Создавать групповые дедлайны\n"
+            welcome_text += "📋 Показывать список активных дедлайнов группы\n"
+            welcome_text += "⏰ Присылать напоминания в группу\n"
+            welcome_text += "👥 Любой участник группы может добавлять и управлять дедлайнами\n\n"
+            welcome_text += "Выберите действие:"
+        else:
+            # Private chat context
+            keyboard = [
+                [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
+                [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")],
+                [InlineKeyboardButton("🔔 Уведомления", callback_data="notification_settings")],
+                [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            welcome_text = f"Привет, {user.first_name}! 👋\n\n"
+            welcome_text += "Я помогу тебе управлять дедлайнами. Вот что я умею:\n\n"
+            welcome_text += "📝 Создавать дедлайны с весом важности\n"
+            welcome_text += "📋 Показывать список активных дедлайнов\n"
+            welcome_text += "⏰ Присылать напоминания\n"
+            welcome_text += "📤 Экспортировать дедлайны для пересылки\n"
+            welcome_text += "🔑 Делиться доступом через секретный код\n\n"
+            welcome_text += "Выбери действие:"
         
         if update.callback_query:
             await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup)
@@ -405,14 +427,22 @@ class DeadlinerBot:
                 return ADD_WEIGHT
             
             user_id = update.effective_user.id
+            chat = update.effective_chat
             title = context.user_data['title']
             description = context.user_data['description']
             deadline_date = context.user_data['deadline_date']
             
-            # Save to database
-            deadline_id = self.db.add_deadline(
-                user_id, title, description, deadline_date, weight
-            )
+            # Save to database - check if this is a group context
+            if chat.type in ['group', 'supergroup']:
+                # Group context
+                deadline_id = self.db.add_deadline(
+                    user_id, title, description, deadline_date, weight, group_id=chat.id
+                )
+            else:
+                # Private chat context
+                deadline_id = self.db.add_deadline(
+                    user_id, title, description, deadline_date, weight
+                )
             
             # Clear conversation data
             context.user_data.clear()
@@ -508,68 +538,48 @@ class DeadlinerBot:
         raise ValueError("Неверный формат даты")
     
     async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = None):
-        """List user's deadlines with new interface."""
+        """List deadlines with group/user context support."""
         user_id = update.effective_user.id
-        deadlines = self.db.get_user_deadlines(user_id)
-        display_settings = self.db.get_user_display_settings(user_id)
+        chat = update.effective_chat
         
-        # Use user's saved sort preference if no specific sort requested
-        if sort_by is None:
-            sort_by = display_settings.get('sort_preference', 'importance_desc')
+        # Check if this is a group or private chat
+        if chat.type in ['group', 'supergroup']:
+            # Group context - get group deadlines
+            deadlines = self.db.get_group_deadlines(chat.id)
+            text_header = f"📋 *Дедлайны группы {chat.title}:*\n\n"
+            empty_message = f"📋 В группе {chat.title} пока нет дедлайнов\n\nИспользуйте кнопку ниже для создания нового."
         else:
-            # Save the new sort preference
-            self.db.update_user_sort_preference(user_id, sort_by)
-
-        # Use unified method to generate deadline list
-        deadline_text = self.generate_deadline_list_text(user_id, include_header=False)
+            # Private chat context - get user deadlines
+            deadlines = self.db.get_user_deadlines(user_id)
+            text_header = f"📋 *Ваши дедлайны:*\n\n"
+            empty_message = f"📋 Дедлайнов нет\n\nИспользуйте кнопку ниже для создания нового."
         
-        if deadline_text == "Дедлайнов нет":
-            text = f"📋 {deadline_text}\n\nИспользуйте кнопку ниже для создания нового."
+        if not deadlines:
+            text = empty_message
             keyboard = [
                 [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
-                [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
             ]
+            if chat.type not in ['group', 'supergroup']:
+                # Private chat gets more options
+                keyboard.extend([
+                    [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+                ])
         else:
-            text = f"📋 *Ваши дедлайны:*\n\n{deadline_text}"
-            
-            # Create sorting buttons (same logic as before)
-            time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
-            importance_arrow = "⬆️" if sort_by == 'importance_asc' else "⬇️" if sort_by == 'importance_desc' else ""  
-            
-            # Toggle sort direction on repeated click
-            time_callback = "sort_time_desc" if sort_by == 'time_asc' else "sort_time_asc"
-            importance_callback = "sort_importance_desc" if sort_by == 'importance_asc' else "sort_importance_asc" 
+            # Format deadlines display
+            deadline_text = self._format_deadlines_list(deadlines, sort_by)
+            text = text_header + deadline_text
             
             keyboard = [
-                [
-                    InlineKeyboardButton(f"⏰ По времени {time_arrow}", callback_data=time_callback),
-                    InlineKeyboardButton(f"🎯 По важности {importance_arrow}", callback_data=importance_callback)
-                ],
-                [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
-                [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
                 [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
             ]
-            
-            # Create 2 sorting buttons with reverse functionality
-            time_arrow = "⬆️" if sort_by == 'time_asc' else "⬇️" if sort_by == 'time_desc' else ""
-            importance_arrow = "⬆️" if sort_by == 'importance_asc' else "⬇️" if sort_by == 'importance_desc' else ""  
-            
-            # Toggle sort direction on repeated click
-            time_callback = "sort_time_desc" if sort_by == 'time_asc' else "sort_time_asc"
-            importance_callback = "sort_importance_desc" if sort_by == 'importance_asc' else "sort_importance_asc" 
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton(f"⏰ По времени {time_arrow}", callback_data=time_callback),
-                    InlineKeyboardButton(f"🎯 По важности {importance_arrow}", callback_data=importance_callback)
-                ],
-                [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
-                [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
-                [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
-            ]
+            if chat.type not in ['group', 'supergroup']:
+                # Private chat gets more options
+                keyboard.extend([
+                    [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_deadlines")],
+                    [InlineKeyboardButton("✅ Завершенные", callback_data="completed_deadlines")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+                ])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -577,6 +587,35 @@ class DeadlinerBot:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    def _format_deadlines_list(self, deadlines, sort_by=None):
+        """Format a list of deadlines for display."""
+        if not deadlines:
+            return "Нет активных дедлайнов"
+        
+        # Sort deadlines by deadline_date
+        deadlines.sort(key=lambda x: x['deadline_date'])
+        
+        text = ""
+        for i, dl in enumerate(deadlines[:10], 1):  # Show max 10 deadlines
+            if dl['deadline_date'].tzinfo is None:
+                dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
+            
+            time_delta = dl['deadline_date'] - datetime.now(self.tz)
+            days_left = time_delta.days
+            
+            if days_left > 0:
+                time_left = f"({days_left} д.)"
+            elif days_left == 0:
+                time_left = "(сегодня)"
+            else:
+                time_left = f"**(просрочено {abs(days_left)} д.)**"
+            
+            weight_emoji = get_weight_emoji(dl['weight'])
+            text += f"{i}. {weight_emoji} *{dl['title']}* {time_left}\n"
+            text += f"📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        
+        return text
     
     async def edit_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show deadlines for editing."""
@@ -2078,6 +2117,7 @@ class DeadlinerBot:
         """Import deadlines from access code."""
         access_code = update.message.text.strip().upper()
         user_id = update.effective_user.id
+        chat = update.effective_chat
         
         # Validate code format
         if not access_code.startswith('DL') or len(access_code) != 18:
@@ -2111,14 +2151,26 @@ class DeadlinerBot:
                     if deadline_date.tzinfo is None:
                         deadline_date = deadline_date.replace(tzinfo=self.tz)
                     
-                    # Add deadline to user's account
-                    self.db.add_deadline(
-                        user_id=user_id,
-                        title=dl_info['title'],
-                        description=dl_info['description'],
-                        deadline_date=deadline_date,
-                        weight=dl_info['weight']
-                    )
+                    # Add deadline to user's account or group
+                    if chat.type in ['group', 'supergroup']:
+                        # Group context
+                        self.db.add_deadline(
+                            user_id=user_id,
+                            title=dl_info['title'],
+                            description=dl_info['description'],
+                            deadline_date=deadline_date,
+                            weight=dl_info['weight'],
+                            group_id=chat.id
+                        )
+                    else:
+                        # Private chat context
+                        self.db.add_deadline(
+                            user_id=user_id,
+                            title=dl_info['title'],
+                            description=dl_info['description'],
+                            deadline_date=deadline_date,
+                            weight=dl_info['weight']
+                        )
                     imported_count += 1
                     
                 except Exception as e:
@@ -2193,25 +2245,15 @@ class DeadlinerBot:
             
             # Check if bot was mentioned or command was used
             if update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
-                deadlines = self.db.get_all_active_deadlines()
+                # Get group-specific deadlines
+                deadlines = self.db.get_group_deadlines(chat.id)
                 
                 if deadlines:
-                    text = "📋 *Активные дедлайны:*\n\n"
-                    
-                    weight_emoji = {'urgent': '🔴', 'important': '🟠', 'normal': '🟡', 'low': '🟢'}
-                    
-                    for dl in deadlines:  # Show max 10 deadlines
-                        if dl['deadline_date'].tzinfo is None:
-                            dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
-                        days_left = (dl['deadline_date'] - datetime.now(self.tz)).days
-                        time_left = f"({days_left}д.)" if days_left > 0 else "(сегодня)"
-                        
-                        text += f"{weight_emoji[dl['weight']]} *{dl['title']}* {time_left}\n"
-                        text += f"📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n\n"
-                    
+                    text = f"📋 *Дедлайны группы {chat.title}:*\n\n"
+                    text += self._format_deadlines_list(deadlines)
                     await update.message.reply_text(text, parse_mode='Markdown')
                 else:
-                    await update.message.reply_text("📋 Нет активных дедлайнов.")
+                    await update.message.reply_text(f"📋 В группе {chat.title} пока нет дедлайнов.")
     
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel current conversation."""
