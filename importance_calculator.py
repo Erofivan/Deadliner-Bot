@@ -5,54 +5,45 @@ from zoneinfo import ZoneInfo
 from typing import List, Dict
 
 
-def calculate_importance_score(weight, deadline_date: datetime) -> float:
+def calculate_importance_score(weight: int, deadline_date: datetime) -> float:
     """
-    Calculate importance score based on weight (0-10) and time remaining.
-    
-    Uses a formula that combines:
-    - Base importance from weight (0-10)
-    - Time urgency factor that increases exponentially as deadline approaches
-    
-    Args:
-        weight: Importance weight from 0-10 (10 being most important) - can be int or str
-        deadline_date: The deadline date
-        
-    Returns:
-        Importance score (higher = more important)
+    Рассчитывает приоритет задачи по часовой многофазной формуле срочности.
+    Формула крайне чувствительна к задачам, до которых осталось менее 3 дней.
     """
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     if deadline_date.tzinfo is None:
         deadline_date = deadline_date.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+
     time_delta = deadline_date - now
-    
-    # Convert to hours remaining (can be negative for overdue)
     hours_remaining = time_delta.total_seconds() / 3600
+
+    if hours_remaining < 0:
+        # Просроченные задачи получают огромный приоритет + бонус от веса
+        return 100000 + int(weight)
     
-    # Base importance from weight (0-10 scale) - ensure it's an integer
+    # Чтобы избежать деления на ноль, если осталось меньше часа
+    if hours_remaining == 0:
+        hours_remaining = 0.001
+
     try:
-        base_importance = int(weight)
+        base_weight = int(weight)
     except (ValueError, TypeError):
-        # Default to medium weight if conversion fails
-        base_importance = 5
+        base_weight = 5
+
+    # Определение коэффициента в зависимости от зоны (в часах)
+    zone_coefficient = 5.0  # 🔵 Зона планирования (> 504 часов)
+
+    if hours_remaining <= 72:
+        # 🔴 Критическая зона (<= 3 дней)
+        zone_coefficient = 2000.0
+    elif hours_remaining <= 504:
+        # 🟡 Зона внимания (<= 21 дня)
+        zone_coefficient = 200.0
     
-    # Time urgency factor using exponential decay
-    # This makes tasks become much more urgent as deadline approaches
-    if hours_remaining > 0:
-        # For future deadlines, urgency increases exponentially as time decreases
-        # Using formula: urgency = 10 * exp(-hours_remaining / 24)
-        # This gives high urgency for tasks due within hours, moderate for days
-        urgency_factor = 10 * math.exp(-hours_remaining / 24)
-    else:
-        # For overdue tasks, add significant penalty
-        overdue_hours = abs(hours_remaining)
-        urgency_factor = 20 + math.log(1 + overdue_hours)  # Logarithmic increase
-    
-    # Combine base importance with urgency
-    # Weight the base importance more heavily to avoid low-importance tasks
-    # from always dominating just because they're urgent
-    total_score = (base_importance * 2) + urgency_factor
-    
-    return total_score
+    # Формула: Вес * (Коэффициент / (Часы + 1))
+    total_score = base_weight * (zone_coefficient / (hours_remaining + 1))
+
+    return round(total_score, 2)
 
 
 def sort_deadlines_by_importance(deadlines: List[Dict]) -> List[Dict]:

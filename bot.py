@@ -411,7 +411,7 @@ class DeadlinerBot:
 
     async def add_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Get deadline description."""
-        if update.message.text == "/skip":
+        if update.message.text.startswith("/skip"):
             context.user_data['description'] = ""
         else:
             context.user_data['description'] = update.message.text
@@ -1094,8 +1094,8 @@ class DeadlinerBot:
 
     async def notification_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show notification settings."""
-        user_id = update.effective_user.id
-        settings = self.db.get_user_notification_settings(user_id)
+        context_id = self.get_context_id(update)
+        settings = self.db.get_user_notification_settings(context_id)
 
         times_str = ", ".join(settings['times']) if settings['times'] else "не настроено"
 
@@ -1146,7 +1146,7 @@ class DeadlinerBot:
     async def save_notification_times(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Save notification times from user input."""
         try:
-            user_id = update.effective_user.id
+            context_id = self.get_context_id(update)
             times_text = update.message.text.strip()
 
             # Parse times
@@ -1173,8 +1173,8 @@ class DeadlinerBot:
                 raise ValueError("Не указано ни одного времени")
 
             # Get current settings and update times
-            settings = self.db.get_user_notification_settings(user_id)
-            self.db.update_user_notification_settings(user_id, valid_times, settings['days'])
+            settings = self.db.get_user_notification_settings(context_id)
+            self.db.update_user_notification_settings(context_id, valid_times, settings['days'])
 
             await update.message.reply_text(
                 f"✅ Время уведомлений сохранено: {', '.join(valid_times)}\n\n"
@@ -1200,8 +1200,8 @@ class DeadlinerBot:
 
     async def set_notification_days(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show day selection interface."""
-        user_id = update.effective_user.id
-        settings = self.db.get_user_notification_settings(user_id)
+        context_id = self.get_context_id(update)
+        settings = self.db.get_user_notification_settings(context_id)
 
         day_names = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']
         selected_days = settings['days']
@@ -1224,8 +1224,8 @@ class DeadlinerBot:
 
     async def toggle_notification_day(self, update: Update, context: ContextTypes.DEFAULT_TYPE, day: int):
         """Toggle a day in notification settings."""
-        user_id = update.effective_user.id
-        settings = self.db.get_user_notification_settings(user_id)
+        context_id = self.get_context_id(update)
+        settings = self.db.get_user_notification_settings(context_id)
 
         if day in settings['days']:
             settings['days'].remove(day)
@@ -1233,7 +1233,7 @@ class DeadlinerBot:
             settings['days'].append(day)
 
         # Save updated settings
-        self.db.update_user_notification_settings(user_id, settings['times'], settings['days'])
+        self.db.update_user_notification_settings(context_id, settings['times'], settings['days'])
 
         # Update interface
         await self.set_notification_days(update, context)
@@ -1668,7 +1668,7 @@ class DeadlinerBot:
             success = self.db.update_deadline(deadline_id, context_id, title=new_title)
 
             if success:
-                keyboard = [[InlineKeyboardButton("✅ К вариантам редактирования", callback_data=f"edit_{deadline_id}")]]
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_{deadline_id}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 await update.message.reply_text(
@@ -1714,7 +1714,7 @@ class DeadlinerBot:
 
             if success:
                 desc_text = new_description if new_description else "(пусто)"
-                keyboard = [[InlineKeyboardButton("✅ К вариантам редактирования", callback_data=f"edit_{deadline_id}")]]
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_{deadline_id}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 await update.message.reply_text(
@@ -1776,7 +1776,7 @@ class DeadlinerBot:
 
                 if success:
                     weight_emoji = get_weight_emoji(weight)
-                    keyboard = [[InlineKeyboardButton("✅ К вариантам редактирования", callback_data=f"edit_{deadline_id}")]]
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_{deadline_id}")]]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
                     await update.message.reply_text(
@@ -1838,7 +1838,7 @@ class DeadlinerBot:
                 success = self.db.update_deadline(deadline_id, context_id, deadline_date=deadline_date)
 
                 if success:
-                    keyboard = [[InlineKeyboardButton("✅ К вариантам редактирования", callback_data=f"edit_{deadline_id}")]]
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_{deadline_id}")]]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
                     await update.message.reply_text(
@@ -2261,7 +2261,7 @@ class DeadlinerBot:
     async def import_deadlines_from_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Import deadlines from access code."""
         access_code = update.message.text.strip().upper()
-        user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
 
         # Validate code format
@@ -2298,23 +2298,12 @@ class DeadlinerBot:
 
                     # Add deadline to user's account
                     self.db.add_deadline(
-                        user_id=user_id,
+                        user_id=context_id,
                         title=dl_info['title'],
                         description=dl_info['description'],
                         deadline_date=deadline_date,
                         weight=dl_info['weight']
                     )
-
-
-
-
-
-
-
-
-
-
-
 
                     imported_count += 1
 
@@ -2520,18 +2509,13 @@ def main():
 
     # Add conversation handler for deadline editing
     edit_deadline_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(bot.start_edit_deadline, pattern=r"^edit_\d+$"),
+         entry_points=[
             CallbackQueryHandler(bot.start_edit_title_conv, pattern=r"^edit_title_\d+$"),
             CallbackQueryHandler(bot.start_edit_description_conv, pattern=r"^edit_desc_\d+$"),
             CallbackQueryHandler(bot.start_edit_date_conv, pattern=r"^edit_date_\d+$"),
             CallbackQueryHandler(bot.start_edit_weight_only_conv, pattern=r"^edit_weight_\d+$")
         ],
         states={
-            EDIT_DEADLINE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_deadline_weight),
-                CallbackQueryHandler(bot.edit_deadline_back, pattern="^detail_")
-            ],
             EDIT_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.edit_title),
                 CallbackQueryHandler(bot.edit_deadline_back_to_title, pattern="^back_to_edit_title$"),
