@@ -64,6 +64,10 @@ class ReminderScheduler:
             
             if should_notify:
                 await self.send_user_notifications(user_id)
+        
+        # Also check for group notifications (e.g., at specific times like 10:00)
+        if current_hour_minute in ['10:00', '16:00', '20:00'] and current_weekday in range(7):  # Daily at specific times
+            await self.check_and_send_group_notifications()
     
     async def send_user_notifications(self, user_id: int):
         """Send notifications to a specific user."""
@@ -79,6 +83,93 @@ class ReminderScheduler:
             
         except Exception as e:
             logger.error(f"Error sending notifications to user {user_id}: {e}")
+    
+    async def check_and_send_group_notifications(self):
+        """Check and send notifications for group deadlines."""
+        try:
+            # Get all groups
+            groups = self.db.get_all_groups()
+            logger.info(f"Checking {len(groups)} groups for deadline notifications")
+            
+            for group_id in groups:
+                await self.send_group_notifications(group_id)
+                
+        except Exception as e:
+            logger.error(f"Error checking group notifications: {e}")
+    
+    async def send_group_notifications(self, group_id: int):
+        """Send notifications to a specific group."""
+        try:
+            # Get group deadlines
+            deadlines = self.db.get_group_deadlines(group_id)
+            
+            if not deadlines:
+                return  # No deadlines to notify about
+            
+            # Filter to only upcoming deadlines (within next 7 days)
+            current_time = datetime.now(self.tz)
+            upcoming_deadlines = []
+            
+            for deadline in deadlines:
+                if deadline['deadline_date'].tzinfo is None:
+                    deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
+                
+                time_until = deadline['deadline_date'] - current_time
+                if 0 <= time_until.total_seconds() <= 7 * 24 * 3600:  # Within 7 days
+                    upcoming_deadlines.append(deadline)
+            
+            if not upcoming_deadlines:
+                return  # No upcoming deadlines
+            
+            # Format deadline content similar to the bot's format
+            deadline_content = self._format_group_deadlines(upcoming_deadlines)
+            
+            # Send notification to group
+            await self._send_group_notification(group_id, deadline_content)
+            
+        except Exception as e:
+            logger.error(f"Error sending notifications to group {group_id}: {e}")
+    
+    def _format_group_deadlines(self, deadlines):
+        """Format group deadlines for notification display."""
+        from importance_calculator import get_weight_emoji
+        
+        text = ""
+        current_time = datetime.now(self.tz)
+        
+        # Sort by deadline date
+        deadlines.sort(key=lambda x: x['deadline_date'])
+        
+        for i, deadline in enumerate(deadlines[:5], 1):  # Show max 5 deadlines
+            time_delta = deadline['deadline_date'] - current_time
+            days_left = time_delta.days
+            
+            if days_left > 0:
+                time_left = f"({days_left} д.)"
+            elif days_left == 0:
+                time_left = "(сегодня)"
+            else:
+                time_left = f"**(просрочено {abs(days_left)} д.)**"
+            
+            weight_emoji = get_weight_emoji(deadline['weight'])
+            text += f"{i}. {weight_emoji} *{deadline['title']}* {time_left}\n"
+            text += f"📅 {deadline['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        
+        return text
+    
+    async def _send_group_notification(self, group_id: int, deadline_content: str):
+        """Send notification message to group."""
+        text = "📋 *Напоминание о дедлайнах группы*\n\n"
+        text += deadline_content
+        
+        try:
+            await self.bot.send_message(
+                chat_id=group_id,
+                text=text,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Failed to send group notification to {group_id}: {e}")
     
     async def send_test_notification(self, user_id: int):
         """Send a test notification to verify the system is working."""
