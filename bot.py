@@ -127,28 +127,67 @@ class DeadlinerBot:
             parse_mode=parse_mode,
             reply_markup=reply_markup
         )
+    
+    def get_context_id(self, update: Update) -> int:
+        """Get the appropriate ID for the current context (user_id for private, chat_id for groups)."""
+        chat = update.effective_chat
+        if chat.type in ['group', 'supergroup']:
+            return chat.id
+        else:
+            return update.effective_user.id
+    
+    def is_group_context(self, update: Update) -> bool:
+        """Check if the update is from a group context."""
+        chat = update.effective_chat
+        return chat.type in ['group', 'supergroup']
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command handler."""
         user = update.effective_user
+        chat = update.effective_chat
+        
+        # Add user to database
         self.db.add_user(user.id, user.username, user.first_name)
+        
+        # Check if this is a group chat
+        if chat.type in ['group', 'supergroup']:
+            # Add group to database
+            self.db.add_group(chat.id, chat.title)
+            
+            keyboard = [
+                [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
+                [InlineKeyboardButton("📋 Наши дедлайны", callback_data="list_deadlines")],
+                [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        keyboard = [
-            [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
-            [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")],
-            [InlineKeyboardButton("🔔 Уведомления", callback_data="notification_settings")],
-            [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            welcome_text = f"Привет, {chat.title}! 👋\n\n"
+            welcome_text += "Я помогу вам управлять дедлайнами. Вот что я умею:\n\n"
+            welcome_text += "📝 Создавать дедлайны с весом важности\n"
+            welcome_text += "📋 Показывать список активных дедлайнов\n"
+            welcome_text += "⏰ Присылать напоминания\n"
+            welcome_text += "📤 Экспортировать дедлайны для пересылки\n"
+            welcome_text += "🔑 Делиться доступом через секретный код\n\n"
+            welcome_text += "Любой участник группы может добавлять и редактировать дедлайны.\n\n"
+            welcome_text += "Выберите действие:"
+        else:
+            # Private chat - original behavior
+            keyboard = [
+                [InlineKeyboardButton("📝 Добавить дедлайн", callback_data="add_deadline")],
+                [InlineKeyboardButton("📋 Мои дедлайны", callback_data="list_deadlines")],
+                [InlineKeyboardButton("🔔 Уведомления", callback_data="notification_settings")],
+                [InlineKeyboardButton("⚙️ Дополнительно", callback_data="advanced_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        welcome_text = f"Привет, {user.first_name}! 👋\n\n"
-        welcome_text += "Я помогу тебе управлять дедлайнами. Вот что я умею:\n\n"
-        welcome_text += "📝 Создавать дедлайны с весом важности\n"
-        welcome_text += "📋 Показывать список активных дедлайнов\n"
-        welcome_text += "⏰ Присылать напоминания\n"
-        welcome_text += "📤 Экспортировать дедлайны для пересылки\n"
-        welcome_text += "🔑 Делиться доступом через секретный код\n\n"
-        welcome_text += "Выбери действие:"
+            welcome_text = f"Привет, {user.first_name}! 👋\n\n"
+            welcome_text += "Я помогу тебе управлять дедлайнами. Вот что я умею:\n\n"
+            welcome_text += "📝 Создавать дедлайны с весом важности\n"
+            welcome_text += "📋 Показывать список активных дедлайнов\n"
+            welcome_text += "⏰ Присылать напоминания\n"
+            welcome_text += "📤 Экспортировать дедлайны для пересылки\n"
+            welcome_text += "🔑 Делиться доступом через секретный код\n\n"
+            welcome_text += "Выбери действие:"
 
 
 
@@ -433,14 +472,15 @@ class DeadlinerBot:
                 return ADD_WEIGHT
 
             user_id = update.effective_user.id
+            context_id = self.get_context_id(update)
 
             title = context.user_data['title']
             description = context.user_data['description']
             deadline_date = context.user_data['deadline_date']
 
-            # Save to database
+            # Save to database (context_id will be user_id for private chats, chat_id for groups)
             deadline_id = self.db.add_deadline(
-                user_id, title, description, deadline_date, weight
+                context_id, title, description, deadline_date, weight
             )
 
 
@@ -545,8 +585,11 @@ class DeadlinerBot:
 
     async def list_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE, sort_by: str = None):
         """List user's deadlines with new interface."""
+        context_id = self.get_context_id(update)
+        deadlines = self.db.get_user_deadlines(context_id)
+        
+        # For display settings, use user_id even in groups for individual preferences
         user_id = update.effective_user.id
-        deadlines = self.db.get_user_deadlines(user_id)
         display_settings = self.db.get_user_display_settings(user_id)
 
         # Use user's saved sort preference if no specific sort requested
@@ -560,7 +603,7 @@ class DeadlinerBot:
             self.db.update_user_sort_preference(user_id, sort_by)
 
         # Use unified method to generate deadline list
-        deadline_text = self.generate_deadline_list_text(user_id, include_header=False)
+        deadline_text = self.generate_deadline_list_text(context_id, user_id, include_header=False)
 
         if deadline_text == "Дедлайнов нет":
             text = f"📋 {deadline_text}\n\nИспользуйте кнопку ниже для создания нового."
@@ -662,7 +705,8 @@ class DeadlinerBot:
     async def edit_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show deadlines for editing."""
         user_id = update.effective_user.id
-        deadlines = self.db.get_user_deadlines(user_id)
+        context_id = self.get_context_id(update)
+        deadlines = self.db.get_user_deadlines(context_id)
 
         if not deadlines:
             text = "📋 У вас пока нет дедлайнов для редактирования."
@@ -691,9 +735,10 @@ class DeadlinerBot:
     async def deadline_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Show detailed view of a deadline."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
         if deadline['deadline_date'].tzinfo is None:
             deadline['deadline_date'] = deadline['deadline_date'].replace(tzinfo=self.tz)
@@ -753,9 +798,10 @@ class DeadlinerBot:
     async def show_edit_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Show editing options menu for a deadline."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
 
         if not deadline:
@@ -793,9 +839,10 @@ class DeadlinerBot:
     async def start_edit_title(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Start editing deadline title only."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
 
         if not deadline:
@@ -816,9 +863,10 @@ class DeadlinerBot:
     async def start_edit_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Start editing deadline description only."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
 
         if not deadline:
@@ -840,9 +888,10 @@ class DeadlinerBot:
     async def start_edit_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Start editing deadline date only."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
 
         if not deadline:
@@ -869,9 +918,10 @@ class DeadlinerBot:
     async def start_edit_weight_only(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Start editing deadline weight only."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
 
         if not deadline:
@@ -914,7 +964,8 @@ class DeadlinerBot:
     async def completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show completed deadlines."""
         user_id = update.effective_user.id
-        completed = self.db.get_completed_deadlines(user_id)
+        context_id = self.get_context_id(update)
+        completed = self.db.get_completed_deadlines(context_id)
         display_settings = self.db.get_user_display_settings(user_id)
 
         # Fix timezone for completed deadlines
@@ -947,7 +998,8 @@ class DeadlinerBot:
     async def restore_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show completed deadlines for restoring."""
         user_id = update.effective_user.id
-        completed = self.db.get_completed_deadlines(user_id)
+        context_id = self.get_context_id(update)
+        completed = self.db.get_completed_deadlines(context_id)
 
         if not completed:
             text = "✅ У вас пока нет завершенных дедлайнов."
@@ -973,7 +1025,8 @@ class DeadlinerBot:
     async def delete_completed_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show completed deadlines for deletion."""
         user_id = update.effective_user.id
-        completed = self.db.get_completed_deadlines(user_id)
+        context_id = self.get_context_id(update)
+        completed = self.db.get_completed_deadlines(context_id)
 
         if not completed:
             text = "✅ У вас пока нет завершенных дедлайнов."
@@ -1010,8 +1063,9 @@ class DeadlinerBot:
     async def delete_completed_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Delete a completed deadline permanently."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
-        if self.db.delete_deadline(deadline_id, user_id):
+        if self.db.delete_deadline(deadline_id, context_id):
             await update.callback_query.answer("🗑️ Дедлайн удален!")
             await self.delete_completed_deadlines(update, context)
         else:
@@ -1162,9 +1216,10 @@ class DeadlinerBot:
     async def test_notifications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show deadlines in the same format as 'Мои дедлайны' for testing notifications."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Use the same unified method as 'Мои дедлайны' to get deadline content
-        deadline_content = self.generate_deadline_list_text(user_id, include_header=False)
+        deadline_content = self.generate_deadline_list_text(context_id, user_id, include_header=False)
 
         if deadline_content == "Дедлайнов нет":
             text = f"🧪 *Тест уведомлений*\n\n📋 {deadline_content}"
@@ -1251,12 +1306,19 @@ class DeadlinerBot:
         result += "\n"
         return result
 
-    def generate_deadline_list_text(self, user_id: int, include_header: bool = True) -> str:
+    def generate_deadline_list_text(self, context_id: int, user_id: int = None, include_header: bool = True) -> str:
         """Generate unified deadline list text using the same format as 'My deadlines'.
         This method ensures consistent formatting across My deadlines, Export deadlines, and Notifications.
+        Args:
+            context_id: The ID for deadlines (user_id for private, chat_id for groups)
+            user_id: The user ID for display settings (individual preferences even in groups)
+            include_header: Whether to include header text
         """
-        deadlines = self.db.get_user_deadlines(user_id)
-        display_settings = self.db.get_user_display_settings(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
+        
+        # Use provided user_id for display settings, or context_id as fallback
+        display_user_id = user_id if user_id is not None else context_id
+        display_settings = self.db.get_user_display_settings(display_user_id)
 
         # Fix timezone for all deadlines
         for dl in deadlines:
@@ -1408,10 +1470,11 @@ class DeadlinerBot:
     async def statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show detailed statistics about user's deadlines."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get all deadlines (completed and active)
-        active_deadlines = self.db.get_user_deadlines(user_id, include_completed=False)
-        completed_deadlines = self.db.get_user_deadlines(user_id, include_completed=True)
+        active_deadlines = self.db.get_user_deadlines(context_id, include_completed=False)
+        completed_deadlines = self.db.get_user_deadlines(context_id, include_completed=True)
         all_deadlines = [dl for dl in completed_deadlines if dl.get('completed')]
 
         # Ensure timezone info
@@ -1541,9 +1604,10 @@ class DeadlinerBot:
     async def start_edit_deadline_full(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Start full editing flow for a deadline."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
 
         if not deadline:
@@ -1571,11 +1635,12 @@ class DeadlinerBot:
         new_title = update.message.text
         deadline_id = context.user_data.get('edit_deadline_id')
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
         editing_field = context.user_data.get('editing_field')
 
         if editing_field == 'title':
             # Individual title editing - save and go back to edit options
-            success = self.db.update_deadline(deadline_id, user_id, title=new_title)
+            success = self.db.update_deadline(deadline_id, context_id, title=new_title)
 
             if success:
                 keyboard = [[InlineKeyboardButton("✅ К вариантам редактирования", callback_data=f"edit_{deadline_id}")]]
@@ -1610,6 +1675,7 @@ class DeadlinerBot:
         """Get edited deadline description."""
         deadline_id = context.user_data.get('edit_deadline_id')
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
         editing_field = context.user_data.get('editing_field')
 
         if update.message.text == "/skip":
@@ -1619,7 +1685,7 @@ class DeadlinerBot:
 
         if editing_field == 'description':
             # Individual description editing - save and go back to edit options
-            success = self.db.update_deadline(deadline_id, user_id, description=new_description)
+            success = self.db.update_deadline(deadline_id, context_id, description=new_description)
 
             if success:
                 desc_text = new_description if new_description else "(пусто)"
@@ -1676,11 +1742,12 @@ class DeadlinerBot:
 
             deadline_id = context.user_data.get('edit_deadline_id')
             user_id = update.effective_user.id
+            context_id = self.get_context_id(update)
             editing_field = context.user_data.get('editing_field')
 
             if editing_field == 'weight':
                 # Individual weight editing - save and go back to edit options
-                success = self.db.update_deadline(deadline_id, user_id, weight=weight)
+                success = self.db.update_deadline(deadline_id, context_id, weight=weight)
 
                 if success:
                     weight_emoji = get_weight_emoji(weight)
@@ -1738,11 +1805,12 @@ class DeadlinerBot:
             deadline_date = self.parse_date(date_text)
             deadline_id = context.user_data.get('edit_deadline_id')
             user_id = update.effective_user.id
+            context_id = self.get_context_id(update)
             editing_field = context.user_data.get('editing_field')
 
             if editing_field == 'date':
                 # Individual date editing - save and go back to edit options
-                success = self.db.update_deadline(deadline_id, user_id, deadline_date=deadline_date)
+                success = self.db.update_deadline(deadline_id, context_id, deadline_date=deadline_date)
 
                 if success:
                     keyboard = [[InlineKeyboardButton("✅ К вариантам редактирования", callback_data=f"edit_{deadline_id}")]]
@@ -1768,7 +1836,7 @@ class DeadlinerBot:
                 weight = context.user_data['weight']
 
                 success = self.db.update_deadline(
-                    deadline_id, user_id, 
+                    deadline_id, context_id, 
                     title=title, 
                     description=description, 
                     weight=weight, 
@@ -1903,9 +1971,10 @@ class DeadlinerBot:
     async def edit_deadline_weight(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Start editing a deadline's weight."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Get deadline from database
-        deadlines = self.db.get_user_deadlines(user_id)
+        deadlines = self.db.get_user_deadlines(context_id)
         deadline = next((d for d in deadlines if d['id'] == deadline_id), None)
 
         if not deadline:
@@ -1946,6 +2015,7 @@ class DeadlinerBot:
                 return EDIT_DEADLINE
 
             user_id = update.effective_user.id
+            context_id = self.get_context_id(update)
             deadline_id = context.user_data.get('edit_deadline_id')
 
             if not deadline_id:
@@ -1953,7 +2023,7 @@ class DeadlinerBot:
                 return ConversationHandler.END
 
             # Update deadline weight
-            success = self.db.update_deadline(deadline_id, user_id, weight=weight)
+            success = self.db.update_deadline(deadline_id, context_id, weight=weight)
 
             if success:
                 weight_emoji = get_weight_emoji(weight)
@@ -2001,8 +2071,9 @@ class DeadlinerBot:
     async def complete_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Mark deadline as completed."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
-        if self.db.complete_deadline(deadline_id, user_id):
+        if self.db.complete_deadline(deadline_id, context_id):
             await update.callback_query.answer("✅ Дедлайн отмечен как выполненный!")
             # Return to edit view if coming from detail view, otherwise to list
             callback_data = update.callback_query.data
@@ -2016,8 +2087,9 @@ class DeadlinerBot:
     async def delete_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE, deadline_id: int):
         """Delete deadline."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
-        if self.db.delete_deadline(deadline_id, user_id):
+        if self.db.delete_deadline(deadline_id, context_id):
             await update.callback_query.answer("🗑 Дедлайн удален!")
             await self.list_deadlines(update, context)
         else:
@@ -2026,9 +2098,10 @@ class DeadlinerBot:
     async def export_deadlines(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Export deadlines in shareable format."""
         user_id = update.effective_user.id
+        context_id = self.get_context_id(update)
 
         # Use unified method to get deadline content  
-        deadline_content = self.generate_deadline_list_text(user_id, include_header=False)
+        deadline_content = self.generate_deadline_list_text(context_id, user_id, include_header=False)
 
         if deadline_content == "Дедлайнов нет":
             text = f"📤 {deadline_content}"
@@ -2061,7 +2134,8 @@ class DeadlinerBot:
     async def generate_access_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate access code based on user's deadlines."""
         user_id = update.effective_user.id
-        deadlines = self.db.get_user_deadlines(user_id)
+        context_id = self.get_context_id(update)
+        deadlines = self.db.get_user_deadlines(context_id)
 
         if not deadlines:
             text = "❌ У вас нет дедлайнов для создания кода доступа."
@@ -2287,15 +2361,16 @@ class DeadlinerBot:
 
             # Check if bot was mentioned or command was used
             if update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
-                deadlines = self.db.get_all_active_deadlines()
-
+                # Get group-specific deadlines
+                context_id = self.get_context_id(update)
+                deadlines = self.db.get_user_deadlines(context_id)
 
                 if deadlines:
-                    text = "📋 *Активные дедлайны:*\n\n"
+                    text = "📋 *Активные дедлайны группы:*\n\n"
                     
                     weight_emoji = {'urgent': '🔴', 'important': '🟠', 'normal': '🟡', 'low': '🟢'}
                     
-                    for dl in deadlines:  # Show max 10 deadlines
+                    for dl in deadlines[:10]:  # Show max 10 deadlines
                         if dl['deadline_date'].tzinfo is None:
                             dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
                         days_left = (dl['deadline_date'] - datetime.now(self.tz)).days
