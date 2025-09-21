@@ -2368,15 +2368,14 @@ class DeadlinerBot:
                 if deadlines:
                     text = "📋 *Активные дедлайны группы:*\n\n"
                     
-                    weight_emoji = {'urgent': '🔴', 'important': '🟠', 'normal': '🟡', 'low': '🟢'}
-                    
                     for dl in deadlines[:10]:  # Show max 10 deadlines
                         if dl['deadline_date'].tzinfo is None:
                             dl['deadline_date'] = dl['deadline_date'].replace(tzinfo=self.tz)
                         days_left = (dl['deadline_date'] - datetime.now(self.tz)).days
                         time_left = f"({days_left}д.)" if days_left > 0 else "(сегодня)"
                         
-                        text += f"{weight_emoji[dl['weight']]} *{dl['title']}* {time_left}\n"
+                        weight_emoji = get_weight_emoji(dl['weight'])
+                        text += f"{weight_emoji} *{dl['title']}* {time_left}\n"
                         text += f"📅 {dl['deadline_date'].strftime('%d.%m.%Y %H:%M')}\n\n"
                     
                     await update.message.reply_text(text, parse_mode='Markdown')
