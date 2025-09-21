@@ -149,6 +149,10 @@ class DeadlinerBot:
         # Add user to database
         self.db.add_user(user.id, user.username, user.first_name)
         
+        # Clear any active conversation state for groups
+        if chat.type in ['group', 'supergroup']:
+            context.user_data.pop('conversation_state', None)
+        
         # Check if this is a group chat
         if chat.type in ['group', 'supergroup']:
             # Add group to database
@@ -374,6 +378,10 @@ class DeadlinerBot:
 
         text = "📝 Давайте создадим новый дедлайн!\n\nВведите название дедлайна:"
 
+        # For groups, set manual conversation state
+        if self.is_group_context(update):
+            context.user_data['conversation_state'] = 'ADD_TITLE'
+
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         else:
@@ -388,6 +396,10 @@ class DeadlinerBot:
         # keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_title")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # For groups, set manual conversation state
+        if self.is_group_context(update):
+            context.user_data['conversation_state'] = 'ADD_DESCRIPTION'
 
         await update.message.reply_text(
             "📄 Отлично! Теперь введите описание дедлайна "
@@ -406,6 +418,10 @@ class DeadlinerBot:
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_description")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # For groups, set manual conversation state
+        if self.is_group_context(update):
+            context.user_data['conversation_state'] = 'ADD_DATE'
 
         await update.message.reply_text(
             "📅 Введите дату и время дедлайна в одном из форматов:\n\n"
@@ -428,6 +444,10 @@ class DeadlinerBot:
 
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_date")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # For groups, set manual conversation state
+            if self.is_group_context(update):
+                context.user_data['conversation_state'] = 'ADD_WEIGHT'
 
             await update.message.reply_text(
                 f"📊 Теперь укажите важность дедлайна (число от 0 до 10):\n\n"
@@ -1114,6 +1134,10 @@ class DeadlinerBot:
 
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="notification_settings")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # For groups, set manual conversation state
+        if self.is_group_context(update):
+            context.user_data['conversation_state'] = 'SET_NOTIFICATION_TIME'
 
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -2359,6 +2383,23 @@ class DeadlinerBot:
         if chat.type in ['group', 'supergroup']:
             # Add group to database
             self.db.add_group(chat.id, chat.title)
+
+            # Check if user is in a conversation state and delegate to appropriate handler
+            user_data = context.user_data
+            if user_data:
+                # Handle conversation states in groups
+                if 'conversation_state' in user_data:
+                    state = user_data['conversation_state']
+                    if state == 'ADD_TITLE':
+                        return await self.add_title(update, context)
+                    elif state == 'ADD_DESCRIPTION':
+                        return await self.add_description(update, context)
+                    elif state == 'ADD_DATE':
+                        return await self.add_date(update, context)
+                    elif state == 'ADD_WEIGHT':
+                        return await self.add_weight(update, context)
+                    elif state == 'SET_NOTIFICATION_TIME':
+                        return await self.save_notification_times(update, context)
 
             # Check if bot was mentioned or command was used
             if update.message.text and ('/deadlines' in update.message.text or '@' in update.message.text):
