@@ -61,9 +61,9 @@ def format_time_delta(delta: timedelta) -> str:
     time_str = " ".join(parts)
     
     if is_overdue:
-        return f"**(просрочено на {time_str})**"
+        return f"**(просрочено на: {time_str})**"
     else:
-        return f"(осталось {time_str})"
+        return f"(осталось: {time_str})"
 
 
 def format_duration(delta: timedelta) -> str:
@@ -1156,7 +1156,7 @@ class DeadlinerBot:
                     created_at = created_at.replace(tzinfo=self.tz)
                 
                 total_time = dl['deadline_date'] - created_at
-                result += f"   ⏱️ Общее время: {format_duration(total_time)}\n"
+                result += f"   ⏱️ Всего времени на выполнение: {format_duration(total_time)}\n"
                 
                 if completed_at and dl.get('completed'):
                     if isinstance(completed_at, str):
@@ -1962,7 +1962,7 @@ class DeadlinerBot:
             text += clean_content
             
             text += "=" * 25 + "\n"
-            text += f"Сгенерировано ботом @DeadlinerBot\n"
+            text += f"Сгенерировано ботом @personal_deadliner_bot\n"
             text += f"Дата: {datetime.now(self.tz).strftime('%d.%m.%Y %H:%M')}\n"
             text += "```\n\n"
             text += "Вы можете скопировать и переслать это сообщение!"
@@ -2309,6 +2309,7 @@ def main():
     # Add conversation handler for deadline editing
     edit_deadline_conv = ConversationHandler(
         entry_points=[
+            CallbackQueryHandler(bot.start_edit_deadline, pattern=r"^edit_\d+$"),
             CallbackQueryHandler(bot.start_edit_title_conv, pattern=r"^edit_title_\d+$"),
             CallbackQueryHandler(bot.start_edit_description_conv, pattern=r"^edit_desc_\d+$"),
             CallbackQueryHandler(bot.start_edit_date_conv, pattern=r"^edit_date_\d+$"),
